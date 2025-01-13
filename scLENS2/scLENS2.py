@@ -3,6 +3,7 @@ import cupy as cp
 import pandas as pd
 from scipy import stats, linalg
 import scipy
+import scipy.sparse as sp
 import numpy as np
 from tqdm.auto import tqdm
 
@@ -48,10 +49,9 @@ class scLENS2():
 
 
     def preprocess(self, data, min_tp=0, min_genes_per_cell=200, min_cells_per_gene=15, plot=False):
-        self.data = data
         # DataFrame 처리
         if isinstance(data, pd.DataFrame):
-            if not data.index.is_unique:
+            if not data.index.is_unique: 
                 print("Cell names are not unique, resetting cell names")
                 data.index = range(len(data.index))
 
@@ -66,18 +66,38 @@ class scLENS2():
         else:
             data_array = data
 
-        # 정상 유전자 및 세포 필터링
-        self.normal_genes = np.where((np.sum(data_array, axis=0) > min_tp) &
-                                (np.count_nonzero(data_array, axis=0) >= min_cells_per_gene))[0]
-        self.normal_cells = np.where((np.sum(data_array, axis=1) > min_tp) &
-                                (np.count_nonzero(data_array, axis=1) >= min_genes_per_cell))[0]
+        if isinstance(data_array, sp.spmatrix):
+
+            gene_sum = data_array.sum(axis=0).A1  
+            cell_sum = data_array.sum(axis=1).A1
+
+            data_array = data_array.toarray()
+            non_zero_genes = np.count_nonzero(data_array, axis=0)
+            non_zero_cells = np.count_nonzero(data_array, axis=1) 
+            
+        else:
+            non_zero_genes = np.count_nonzero(data_array, axis=0)
+            non_zero_cells = np.count_nonzero(data_array, axis=1)
+            gene_sum = np.sum(data_array, axis=0)
+            cell_sum = np.sum(data_array, axis=1)
+
+        self.normal_genes = np.where((gene_sum > min_tp) & (non_zero_genes >= min_cells_per_gene))[0]
+        self.normal_cells = np.where((cell_sum > min_tp) & (non_zero_cells >= min_genes_per_cell))[0]
+
+
+        # # 정상 유전자 및 세포 필터링
+        # self.normal_genes = np.where((np.sum(data_array, axis=0) > min_tp) &
+        #                         (np.count_nonzero(data_array, axis=0) >= min_cells_per_gene))[0]
+        # self.normal_cells = np.where((np.sum(data_array, axis=1) > min_tp) &
+        #                         (np.count_nonzero(data_array, axis=1) >= min_genes_per_cell))[0]
 
         # 필터링된 데이터
         self._raw = data_array[self.normal_cells][:, self.normal_genes]
 
         print(f'Removed {data_array.shape[0] - len(self.normal_cells)} cells and '
               f'{data_array.shape[1] - len(self.normal_genes)} genes in QC')
-
+        
+            
         # cupy 사용 (torch 대신)
         X = cp.array(self._raw, dtype=cp.float64)
 
@@ -102,6 +122,9 @@ class scLENS2():
         self.X = cp.asnumpy(X)
         self.preprocessed = True
 
+        # 추가
+        data = data[self.normal_cells, self.normal_genes]
+
         if plot:
             # 그림 생성
             fig1, axs1 = plt.subplots(1, 2, figsize=(10, 5))
@@ -124,7 +147,10 @@ class scLENS2():
 
         del X, l1_norm, l2_norm, mean, std
 
-        return pd.DataFrame(self.X)
+        # 추가
+        self.data = data
+        # 추가
+        return pd.DataFrame(self.X), data
        
     
     def _preprocess_rand(self, X, inplace=True):
