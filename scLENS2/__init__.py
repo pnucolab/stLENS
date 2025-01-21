@@ -1,1 +1,1 @@
-from .scLENS2 import scLENS2
+from . import scLENS2
