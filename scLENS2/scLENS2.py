@@ -20,7 +20,7 @@ import seaborn as sns
 import psutil
 import os
 
-from PCA import PCA
+from .PCA import PCA
 
 
 class scLENS2():
@@ -48,8 +48,11 @@ class scLENS2():
         self.data = data
 
 
-    def preprocess(self, data, min_tp=0, min_genes_per_cell=200, min_cells_per_gene=15, plot=False):
+    def preprocess(self, data, min_tp=0, min_genes_per_cell=200, min_cells_per_gene=15, cell_cutoff=None, ensure_cells_greater_than_genes=False, plot=False):
         # DataFrame 처리
+        print(self.get_cpu_memory_usage()) 
+        print(self.get_gpu_memory_usage()) 
+
         if isinstance(data, pd.DataFrame):
             if not data.index.is_unique: 
                 print("Cell names are not unique, resetting cell names")
@@ -85,19 +88,12 @@ class scLENS2():
         self.normal_cells = np.where((cell_sum > min_tp) & (non_zero_cells >= min_genes_per_cell))[0]
 
 
-        # # 정상 유전자 및 세포 필터링
-        # self.normal_genes = np.where((np.sum(data_array, axis=0) > min_tp) &
-        #                         (np.count_nonzero(data_array, axis=0) >= min_cells_per_gene))[0]
-        # self.normal_cells = np.where((np.sum(data_array, axis=1) > min_tp) &
-        #                         (np.count_nonzero(data_array, axis=1) >= min_genes_per_cell))[0]
-
         # 필터링된 데이터
         self._raw = data_array[self.normal_cells][:, self.normal_genes]
 
         print(f'Removed {data_array.shape[0] - len(self.normal_cells)} cells and '
               f'{data_array.shape[1] - len(self.normal_genes)} genes in QC')
-        
-            
+                
         # cupy 사용 (torch 대신)
         X = cp.array(self._raw, dtype=cp.float64)
 
@@ -150,6 +146,10 @@ class scLENS2():
         # 추가
         self.data = data
         # 추가
+
+        print(self.get_cpu_memory_usage()) 
+        print(self.get_gpu_memory_usage()) 
+
         return pd.DataFrame(self.X), data
        
     
@@ -179,8 +179,8 @@ class scLENS2():
         return X
 
     def fit_transform(self, data=None, eigen_solver='wishart', plot_mp = False):
-        #print(self.get_cpu_memory_usage()) 
-        #print(self.get_gpu_memory_usage())  
+        print(self.get_cpu_memory_usage()) 
+        print(self.get_gpu_memory_usage())  
         
         if data is None and not self.preprocessed:
             raise Exception('No data has been provided. Provide data directly or through the preprocess function')
@@ -247,7 +247,10 @@ class scLENS2():
         print(self.get_cpu_memory_usage())  # CPU 메모리 사용량 출력
         print(self.get_gpu_memory_usage())  # GPU 메모리 사용량 출력
 
-        self.data.obsm['PCA_scLENS'] = self.X_transform
+        if self.X.shape[0] <= self.X.shape[1]:
+            self.data.obsm['PCA_scLENS'] = self.X_transform
+        else:
+            self.data.varm['PCA_scLENS'] = self.X_transform
 
         return self.X_transform
     
@@ -287,7 +290,10 @@ class scLENS2():
             pert += bin
             
             pert = self._preprocess_rand(pert)
-            pert = pert @ pert.T
+            if pert.shape[0] <= pert.shape[1]:
+                pert = pert @ pert.T
+            else:
+                pert = pert.T @ pert
             pert /= pert.shape[1]
             
             Vbp = cp.linalg.eigh(pert)[1][:, -n_vbp:]
@@ -321,7 +327,10 @@ class scLENS2():
         return comp
     
     def _PCA_rand(self, X, n):
-        W = (X @ X.T)
+        if X.shape[0] <= X.shape[1]:
+            W = (X @ X.T)
+        else:
+            W = (X.T @ X)
         W /= X.shape[1]
         _, V = cp.linalg.eigh(W)
         V = V[:, -n:]
@@ -350,7 +359,7 @@ class scLENS2():
         return f"CPU Memory Usage: {mem_info.rss / 1024 ** 2:.2f} MB"
 
     def get_gpu_memory_usage(self):
-        device = cp.cuda.Device(0)
+        device = cp.cuda.Device(1)
         # 메모리 풀 확인
         mempool = cp.get_default_memory_pool()
         pinned_mempool = cp.get_default_pinned_memory_pool()
