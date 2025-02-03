@@ -26,6 +26,10 @@ class PCA():
             self.L, self.V = self._get_eigen(X)
             Xr = self._random_matrix(X)
             self.Lr, self.Vr = self._get_eigen(Xr)
+            
+            del Xr
+            mempool = cp.get_default_memory_pool()
+            mempool.free_all_blocks()
 
             self.explained_variance_ = (self.L**2) / self.n_cells
             self.total_variance_ = self.explained_variance_.sum()
@@ -67,17 +71,26 @@ class PCA():
             print("cell is more than gene")
             Y = (X.T @ X)
         Y /= X.shape[1]
+
+        mempool = cp.get_default_memory_pool()
+        mempool.free_all_blocks()
         return Y
 
     def _get_eigen(self, X):
         Y = self._wishart_matrix(X)
         L, V = cp.linalg.eigh(Y)
+
+        del Y
+        mempool = cp.get_default_memory_pool()
+        mempool.free_all_blocks()
         return L, V
 
     def _random_matrix(self, X):
         Xr = cp.array([
             cp.random.permutation(row) for row in X
         ])
+        mempool = cp.get_default_memory_pool()
+        mempool.free_all_blocks()
         return Xr
     
 

@@ -3,7 +3,7 @@ import cupy as cp
 import pandas as pd
 from scipy import stats, linalg
 import scipy
-import scipy.sparse as sp
+import scipy.sparse as sp 
 import numpy as np
 from tqdm.auto import tqdm
 
@@ -49,10 +49,6 @@ class scLENS2():
 
 
     def preprocess(self, data, min_tp=0, min_genes_per_cell=200, min_cells_per_gene=15, cell_cutoff=None, ensure_cells_greater_than_genes=False, plot=False):
-        # DataFrame 처리
-        print(self.get_cpu_memory_usage()) 
-        print(self.get_gpu_memory_usage()) 
-
         if isinstance(data, pd.DataFrame):
             if not data.index.is_unique: 
                 print("Cell names are not unique, resetting cell names")
@@ -94,7 +90,6 @@ class scLENS2():
         print(f'Removed {data_array.shape[0] - len(self.normal_cells)} cells and '
               f'{data_array.shape[1] - len(self.normal_genes)} genes in QC')
                 
-        # cupy 사용 (torch 대신)
         X = cp.array(self._raw, dtype=cp.float64)
 
         # L1 정규화 및 로그 변환
@@ -118,14 +113,12 @@ class scLENS2():
         self.X = cp.asnumpy(X)
         self.preprocessed = True
 
-        # 추가
         data = data[self.normal_cells, self.normal_genes]
 
         if plot:
-            # 그림 생성
             fig1, axs1 = plt.subplots(1, 2, figsize=(10, 5))
             raw = self._raw
-            clean = X  # 수정: numpy 상태에서 바로 사용
+            clean = X  
 
             axs1[0].hist(np.average(raw, axis=1), bins=100)
             axs1[1].hist(np.average(clean.get(), axis=1), bins=100)
@@ -142,14 +135,10 @@ class scLENS2():
                 data.uns['preprocess_sd_plot'] = fig2
 
         del X, l1_norm, l2_norm, mean, std
+        mempool = cp.get_default_memory_pool()
+        mempool.free_all_blocks()
 
-        # 추가
         self.data = data
-        # 추가
-
-        print(self.get_cpu_memory_usage()) 
-        print(self.get_gpu_memory_usage()) 
-
         return pd.DataFrame(self.X), data
        
     
@@ -176,11 +165,11 @@ class scLENS2():
         X -= cp.mean(X, axis=0)
 
         del l1_norm, l2_norm, mean, std
+        mempool = cp.get_default_memory_pool()
+        mempool.free_all_blocks()
         return X
 
     def fit_transform(self, data=None, eigen_solver='wishart', plot_mp = False):
-        print(self.get_cpu_memory_usage()) 
-        print(self.get_gpu_memory_usage())  
         
         if data is None and not self.preprocessed:
             raise Exception('No data has been provided. Provide data directly or through the preprocess function')
@@ -198,6 +187,10 @@ class scLENS2():
        
         pca_result = self._PCA(X, plot_mp = plot_mp)
         self._signal_components = pca_result[1]
+
+        del X
+        mempool = cp.get_default_memory_pool()
+        mempool.free_all_blocks()
 
         if self.sparsity == 'auto':
             self._calculate_sparsity()
@@ -244,8 +237,8 @@ class scLENS2():
         self.robust_scores = pert_scores
 
         del raw, pert_scores, pert_vecs
-        print(self.get_cpu_memory_usage())  # CPU 메모리 사용량 출력
-        print(self.get_gpu_memory_usage())  # GPU 메모리 사용량 출력
+        mempool = cp.get_default_memory_pool()
+        mempool.free_all_blocks()
 
         if self.X.shape[0] <= self.X.shape[1]:
             self.data.obsm['PCA_scLENS'] = self.X_transform
@@ -295,10 +288,13 @@ class scLENS2():
             else:
                 pert = pert.T @ pert
             pert /= pert.shape[1]
-            
+            # pert = pert @ pert.T
+            # pert /= pert.shape[1]
             Vbp = cp.linalg.eigh(pert)[1][:, -n_vbp:]
             
             del pert
+            mempool = cp.get_default_memory_pool()
+            mempool.free_all_blocks()
 
             corr_arr = cp.max(cp.abs(Vb.T @ Vbp), axis=0).get()
             corr = np.sort(corr_arr)[1]
@@ -314,6 +310,8 @@ class scLENS2():
             
             sparse -= self.sparsity_step
         del bin, Vb
+        mempool = cp.get_default_memory_pool()
+        mempool.free_all_blocks()
     
     def _PCA(self, X, plot_mp = False):
         pca = PCA(device = self.device)
@@ -323,10 +321,15 @@ class scLENS2():
             pca.plot_mp(comparison = False)
             plt.show()
         comp = pca.get_signal_components()
+
+        del pca
+        mempool = cp.get_default_memory_pool()
+        mempool.free_all_blocks()
     
         return comp
     
     def _PCA_rand(self, X, n):
+        # W = (X @ X.T)
         if X.shape[0] <= X.shape[1]:
             W = (X @ X.T)
         else:
@@ -336,6 +339,8 @@ class scLENS2():
         V = V[:, -n:]
 
         del W, _
+        mempool = cp.get_default_memory_pool()
+        mempool.free_all_blocks()
         return V
 
 
@@ -353,22 +358,10 @@ class scLENS2():
         if isinstance(self.data, sc.AnnData):
             self.data.uns['robust_score_plot'] = fig1
 
-    def get_cpu_memory_usage(self):
-        process = psutil.Process(os.getpid())
-        mem_info = process.memory_info()
-        return f"CPU Memory Usage: {mem_info.rss / 1024 ** 2:.2f} MB"
-
-    def get_gpu_memory_usage(self):
-        device = cp.cuda.Device(1)
-        # 메모리 풀 확인
-        mempool = cp.get_default_memory_pool()
-        pinned_mempool = cp.get_default_pinned_memory_pool()
-
-        # 현재 사용 중인 메모리 (bytes)
-        used_bytes = mempool.used_bytes() / 1024 ** 2
-        total_bytes = mempool.total_bytes() / 1024 ** 2
-
-        return used_bytes, total_bytes
+    # def get_cpu_memory_usage(self):
+    #     process = psutil.Process(os.getpid())
+    #     mem_info = process.memory_info()
+    #     return f"CPU Memory Usage: {mem_info.rss / 1024 ** 2:.2f} MB"
         
 
     

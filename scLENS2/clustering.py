@@ -60,7 +60,7 @@ def find_clusters(X,
     for i, cluster in enumerate(partition):
         for element in cluster:
             labels[element] = i + 1
-    
+    del partition # 면민 추가함
     return labels
 
 
@@ -97,6 +97,7 @@ def construct_sample_clusters(X,
                     for res_i in batch_res_list
                 )
             clusters.extend(batch_clusters)
+            del batch_clusters # 면민 추가함
     else:
         total_tasks = reps
         for batch_start in tqdm(range(0, total_tasks, batch_size), desc='Batched Sampling', **kwargs):
@@ -110,6 +111,7 @@ def construct_sample_clusters(X,
                     for _ in range(batch_reps)
                 )
             clusters.extend(batch_clusters)
+            del batch_clusters # 면민 추가함
 
     return clusters
 
@@ -161,6 +163,8 @@ def chooseR(X,
         stats_row.append(np.median(sil_grp))
 
         stats.append(stats_row) 
+
+        del stats_row, clusters, score, sil, sil_grp # 면민 추가함
     
     stats = pd.DataFrame(stats, columns=['res', 'n_clusters', 'low_med', 'med']).sort_values(by=['n_clusters'], ascending=False)
     # print("stats : ", stats)
@@ -209,47 +213,52 @@ def sample_cluster(X, k, res=1.2, filler=-1, sample=True, metric='cosine'):
     sample = random.sample(range(X.shape[0]), k)
     cls = find_clusters(X[sample], res=res, metric=metric)
     np.put(row, sample, cls)
+    del cls # 면민 추가함
     return row
 
 def calculate_score_gpu(clusters, n, reps, batch_size=3000):
     """
-    Score calculation on GPU
+    GPU에서 score 행렬을 계산하는 최적화된 함수
     """
-    score = np.zeros((n, n), dtype=np.csingle)
-    score_device = cuda.to_device(score)
+    # Score 행렬을 GPU 메모리에 할당
+    score_device = cp.zeros((n, n), dtype=cp.float32)
 
     threadsPerBlock = (16, 16)
     blocksPerGrid_x = math.ceil(n / threadsPerBlock[0])
     blocksPerGrid_y = math.ceil(batch_size / threadsPerBlock[1])
     blocksPerGrid = (blocksPerGrid_x, blocksPerGrid_y)
-    
+
     batch_num = math.ceil(n / batch_size)
 
+    # GPU에서 연산할 데이터를 미리 할당
     for row in clusters:
+        row_device = cp.asarray(row, dtype=cp.float32)  # 전체 row를 GPU로 복사
+
         for i in range(batch_num):
             x_batch_start = i * batch_size
             x_batch_end = min((i + 1) * batch_size, n)
-            x_batch = row[x_batch_start:x_batch_end]
-            x_device = cuda.to_device(x_batch)
+            x_batch_device = row_device[x_batch_start:x_batch_end]
 
             for j in range(batch_num):
                 y_batch_start = j * batch_size
                 y_batch_end = min((j + 1) * batch_size, n)
-                y_batch = row[y_batch_start:y_batch_end]
-                y_device = cuda.to_device(y_batch)
-                outer_equality_kernel[blocksPerGrid, threadsPerBlock](x_device, y_device, score_device, x_batch_start, y_batch_start)
+                y_batch_device = row_device[y_batch_start:y_batch_end]
 
-                del y_device
-                cuda.current_context().memory_manager.deallocations.clear()
+                # GPU 커널 실행
+                outer_equality_kernel[blocksPerGrid, threadsPerBlock](x_batch_device, y_batch_device, score_device, x_batch_start, y_batch_start)
 
-            del x_device
-            cuda.current_context().memory_manager.deallocations.clear()
-    
-    score = score_device.copy_to_host()
-    score = np.where(score.real > 0, percent_match(score, reps), 0)
-    
+        # GPU 메모리 정리 (불필요한 메모리 할당 방지)
+        del row_device
+        cp.get_default_memory_pool().free_all_blocks()
+
+    # GPU에서 CPU로 데이터 복사
+    score = score_device.get()
+    score = np.where(score > 0, percent_match(score, reps), 0)
+
+    # GPU 메모리 정리
     del score_device
-    cuda.current_context().memory_manager.deallocations.clear()
+    cp.get_default_memory_pool().free_all_blocks()
+
     return score
 
 def calculate_score_cpu(clusters, n, reps):
@@ -262,6 +271,7 @@ def calculate_score_cpu(clusters, n, reps):
         equality_matrix = np.equal.outer(row, row) & mask_valid[:, None]
 
         score += equality_matrix.astype(np.csingle)
+        del equality_matrix  # 면민 추가함
         score += (mask_invalid[:, None] | mask_invalid[None, :]) * 1j
 
     score = np.where(score.real > 0, percent_match(score, reps), 0)
@@ -269,18 +279,14 @@ def calculate_score_cpu(clusters, n, reps):
     return score
 
 
-@cuda.jit
-def outer_equality_kernel(x, y, out, x_start, y_start):
-    """
-    GPU kernel score calculation algorithm
-    """
-    tx, ty = cuda.grid(2)
+@cuda.jit  # 면민 수정함
+def outer_equality_kernel(x, y, score, x_offset, y_offset):
+    tx = cuda.threadIdx.x + cuda.blockIdx.x * cuda.blockDim.x
+    ty = cuda.threadIdx.y + cuda.blockIdx.y * cuda.blockDim.y
 
     if tx < x.shape[0] and ty < y.shape[0]:
-        if x[tx] == -1 or y[ty] == -1:
-            out[tx + x_start, ty + y_start] += 1j
-        elif x[tx] == y[ty]:
-            out[tx + x_start, ty + y_start] += 1
+        score[x_offset + tx, y_offset + ty] = x[tx] == y[ty]
+
 
 def percent_match(x, reps):
     """

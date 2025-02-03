@@ -15,7 +15,7 @@ import matplotlib.lines as mlines
 
 import seaborn as sns
 
-import psutil
+import psutil 
 import os
 
 class Calc():
