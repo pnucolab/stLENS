@@ -19,6 +19,7 @@ import seaborn as sns
 
 import psutil
 import os
+import gc
 
 from .PCA import PCA
 
@@ -137,6 +138,8 @@ class scLENS2():
         del X, l1_norm, l2_norm, mean, std
         mempool = cp.get_default_memory_pool()
         mempool.free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        gc.collect()
 
         self.data = data
         return pd.DataFrame(self.X), data
@@ -167,6 +170,8 @@ class scLENS2():
         del l1_norm, l2_norm, mean, std
         mempool = cp.get_default_memory_pool()
         mempool.free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        gc.collect()
         return X
 
     def fit_transform(self, data=None, eigen_solver='wishart', plot_mp = False):
@@ -191,6 +196,8 @@ class scLENS2():
         del X
         mempool = cp.get_default_memory_pool()
         mempool.free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        gc.collect()
 
         if self.sparsity == 'auto':
             self._calculate_sparsity()
@@ -239,6 +246,9 @@ class scLENS2():
         del raw, pert_scores, pert_vecs
         mempool = cp.get_default_memory_pool()
         mempool.free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        gc.collect()
+
 
         if self.X.shape[0] <= self.X.shape[1]:
             self.data.obsm['PCA_scLENS'] = self.X_transform
@@ -295,6 +305,8 @@ class scLENS2():
             del pert
             mempool = cp.get_default_memory_pool()
             mempool.free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+            gc.collect()
 
             corr_arr = cp.max(cp.abs(Vb.T @ Vbp), axis=0).get()
             corr = np.sort(corr_arr)[1]
@@ -312,6 +324,11 @@ class scLENS2():
         del bin, Vb
         mempool = cp.get_default_memory_pool()
         mempool.free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        gc.collect()
+        
+
+
     
     def _PCA(self, X, plot_mp = False):
         pca = PCA(device = self.device)
@@ -325,6 +342,8 @@ class scLENS2():
         del pca
         mempool = cp.get_default_memory_pool()
         mempool.free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        gc.collect()
     
         return comp
     
@@ -341,7 +360,10 @@ class scLENS2():
         del W, _
         mempool = cp.get_default_memory_pool()
         mempool.free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        gc.collect()
         return V
+
 
 
     def plot_robust_score(self):
@@ -357,11 +379,6 @@ class scLENS2():
     
         if isinstance(self.data, sc.AnnData):
             self.data.uns['robust_score_plot'] = fig1
-
-    # def get_cpu_memory_usage(self):
-    #     process = psutil.Process(os.getpid())
-    #     mem_info = process.memory_info()
-    #     return f"CPU Memory Usage: {mem_info.rss / 1024 ** 2:.2f} MB"
         
 
     

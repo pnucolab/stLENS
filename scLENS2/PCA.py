@@ -11,6 +11,7 @@ import seaborn as sns
 from scipy import stats
 import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
+import gc
 
 class PCA():
     def __init__(self,device = None, data = None): 
@@ -30,6 +31,8 @@ class PCA():
             del Xr
             mempool = cp.get_default_memory_pool()
             mempool.free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+            gc.collect()
 
             self.explained_variance_ = (self.L**2) / self.n_cells
             self.total_variance_ = self.explained_variance_.sum()
@@ -74,7 +77,10 @@ class PCA():
 
         mempool = cp.get_default_memory_pool()
         mempool.free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        gc.collect()
         return Y
+
 
     def _get_eigen(self, X):
         Y = self._wishart_matrix(X)
@@ -83,6 +89,8 @@ class PCA():
         del Y
         mempool = cp.get_default_memory_pool()
         mempool.free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        gc.collect()
         return L, V
 
     def _random_matrix(self, X):
@@ -91,6 +99,8 @@ class PCA():
         ])
         mempool = cp.get_default_memory_pool()
         mempool.free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        gc.collect()
         return Xr
     
 

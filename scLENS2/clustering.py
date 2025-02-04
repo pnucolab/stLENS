@@ -17,6 +17,7 @@ from joblib import Parallel, delayed, wrap_non_picklable_objects
 from sklearn.neighbors import NearestNeighbors
 import random, math
 from numba import cuda 
+import gc
 
 
 
@@ -250,6 +251,8 @@ def calculate_score_gpu(clusters, n, reps, batch_size=3000):
         # GPU 메모리 정리 (불필요한 메모리 할당 방지)
         del row_device
         cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        gc.collect()
 
     # GPU에서 CPU로 데이터 복사
     score = score_device.get()
@@ -258,6 +261,8 @@ def calculate_score_gpu(clusters, n, reps, batch_size=3000):
     # GPU 메모리 정리
     del score_device
     cp.get_default_memory_pool().free_all_blocks()
+    cp.get_default_pinned_memory_pool().free_all_blocks()
+    gc.collect()
 
     return score
 
