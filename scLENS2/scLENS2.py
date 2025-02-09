@@ -84,31 +84,50 @@ class scLENS2():
         self.normal_genes = np.where((gene_sum > min_tp) & (non_zero_genes >= min_cells_per_gene))[0]
         self.normal_cells = np.where((cell_sum > min_tp) & (non_zero_cells >= min_genes_per_cell))[0]
 
+        # 추가메모리 해제
+        del gene_sum, cell_sum, non_zero_genes, non_zero_cells
+        gc.collect()
 
         # 필터링된 데이터
         self._raw = data_array[self.normal_cells][:, self.normal_genes]
 
         print(f'Removed {data_array.shape[0] - len(self.normal_cells)} cells and '
               f'{data_array.shape[1] - len(self.normal_genes)} genes in QC')
+        
+        # 추가메모리 해제
+        del data_array
+        gc.collect()
                 
-        X = cp.array(self._raw, dtype=cp.float64)
+        X = cp.array(self._raw, dtype=cp.float32)
+        # # 추가메모리 해제
+        # del self._raw
+        # gc.collect()
 
         # L1 정규화 및 로그 변환
         l1_norm = cp.linalg.norm(X, ord=1, axis=1)
         X = X / l1_norm[:, cp.newaxis]
         X += 1
         X = cp.log(X)
+        # 추가메모리 해제
+        del l1_norm
+        gc.collect()
 
         # Z-score 정규화
         mean = cp.mean(X, axis=0)
         std = cp.std(X, axis=0)
         X = (X - mean) / std
+        # 추가메모리 해제
+        del mean, std
+        gc.collect()
 
         # L2 정규화
         l2_norm = cp.linalg.norm(X, ord=2, axis=1)
         X = X / l2_norm[:, cp.newaxis]
         X *= cp.mean(l2_norm)
         X -= cp.mean(X, axis=0)
+        # 추가메모리 해제
+        del l2_norm
+        gc.collect()
 
         # cupy -> numpy 변환
         self.X = cp.asnumpy(X)
@@ -135,9 +154,8 @@ class scLENS2():
                 data.uns['preprocess_mean_plot'] = fig1
                 data.uns['preprocess_sd_plot'] = fig2
 
-        del X, l1_norm, l2_norm, mean, std
-        mempool = cp.get_default_memory_pool()
-        mempool.free_all_blocks()
+        del X
+        cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
 
@@ -153,6 +171,8 @@ class scLENS2():
         # L1 정규화 및 로그 변환
         l1_norm = cp.linalg.norm(X, ord=1, axis=1)
         X = X / l1_norm[:, cp.newaxis]
+        del l1_norm
+        cp.get_default_memory_pool().free_all_blocks()
         X += 1
         X = cp.log(X)
     
@@ -160,16 +180,17 @@ class scLENS2():
         mean = cp.mean(X, axis=0)
         std = cp.std(X, axis=0)
         X = (X - mean) / std
+        del mean, std
+        cp.get_default_memory_pool().free_all_blocks()
     
         # L2 정규화
         l2_norm = cp.linalg.norm(X, ord=2, axis=1)
         X = X / l2_norm[:, cp.newaxis]
         X *= cp.mean(l2_norm)
+        del l2_norm
+        cp.get_default_memory_pool().free_all_blocks()
         X -= cp.mean(X, axis=0)
 
-        del l1_norm, l2_norm, mean, std
-        mempool = cp.get_default_memory_pool()
-        mempool.free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
         return X
@@ -188,14 +209,13 @@ class scLENS2():
             else:
                 raise ValueError("Data must be a pandas DataFrame or cupy ndarray")
         
-        X = cp.array(self.X, dtype=cp.float64)
+        X = cp.array(self.X, dtype=cp.float32)
        
         pca_result = self._PCA(X, plot_mp = plot_mp)
         self._signal_components = pca_result[1]
 
         del X
-        mempool = cp.get_default_memory_pool()
-        mempool.free_all_blocks()
+        cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
 
@@ -203,7 +223,7 @@ class scLENS2():
             self._calculate_sparsity()
             
         if self.preprocessed:
-            raw = cp.array(self._raw, dtype=cp.float64)
+            raw = cp.array(self._raw, dtype=cp.float32)
 
         n = min(self._signal_components.shape[1] * self._perturbed_n_scale, self.X.shape[1])
         
@@ -228,6 +248,9 @@ class scLENS2():
             pert_vecs.append(perturbed[:, pert_select])
 
             del rand, perturbed, pert_select
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+            gc.collect()
         
         pert_scores = list()
         for i in range(self.n_rand_matrix):
@@ -244,8 +267,7 @@ class scLENS2():
         self.robust_scores = pert_scores
 
         del raw, pert_scores, pert_vecs
-        mempool = cp.get_default_memory_pool()
-        mempool.free_all_blocks()
+        cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
 
@@ -276,7 +298,7 @@ class scLENS2():
         # Construct binarized data matrix
         bin = scipy.sparse.csr_array(self._raw)
         bin.data[:] = 1.
-        bin = cp.array(bin.toarray(), dtype=cp.float64)
+        bin = cp.array(bin.toarray(), dtype=cp.float32)
         Vb = self._PCA_rand(self._preprocess_rand(bin, inplace=False), bin.shape[0])
         n_vbp = Vb.shape[1]//2
 
@@ -291,6 +313,11 @@ class scLENS2():
             pert = cp.zeros_like(bin)
             pert[tuple(idx)] = 1
             pert += bin
+
+            del idx
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+            gc.collect()
             
             pert = self._preprocess_rand(pert)
             if pert.shape[0] <= pert.shape[1]:
@@ -303,12 +330,15 @@ class scLENS2():
             Vbp = cp.linalg.eigh(pert)[1][:, -n_vbp:]
             
             del pert
-            mempool = cp.get_default_memory_pool()
-            mempool.free_all_blocks()
+            cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
             gc.collect()
 
             corr_arr = cp.max(cp.abs(Vb.T @ Vbp), axis=0).get()
+            del Vbp  # 사용 끝난 변수 삭제
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+            gc.collect()
             corr = np.sort(corr_arr)[1]
             
             buffer.pop(0)
@@ -321,15 +351,11 @@ class scLENS2():
                  break
             
             sparse -= self.sparsity_step
-        del bin, Vb
-        mempool = cp.get_default_memory_pool()
-        mempool.free_all_blocks()
+        del bin, Vb, selection
+        cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
         
-
-
-    
     def _PCA(self, X, plot_mp = False):
         pca = PCA(device = self.device)
         pca.fit(X)
@@ -340,8 +366,7 @@ class scLENS2():
         comp = pca.get_signal_components()
 
         del pca
-        mempool = cp.get_default_memory_pool()
-        mempool.free_all_blocks()
+        cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
     
@@ -358,10 +383,10 @@ class scLENS2():
         V = V[:, -n:]
 
         del W, _
-        mempool = cp.get_default_memory_pool()
-        mempool.free_all_blocks()
+        cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
+
         return V
 
 

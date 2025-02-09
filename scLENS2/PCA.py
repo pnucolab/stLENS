@@ -29,8 +29,7 @@ class PCA():
             self.Lr, self.Vr = self._get_eigen(Xr)
             
             del Xr
-            mempool = cp.get_default_memory_pool()
-            mempool.free_all_blocks()
+            cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
             gc.collect()
 
@@ -56,6 +55,10 @@ class PCA():
         self.n_components = len(self.Ls)
         print(f"Number of signal components: {self.n_components}")
 
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+        gc.collect()
+
     def get_signal_components(self, n_components=0):
         if n_components == 0:
             comp = self.Ls,  self.Vs
@@ -75,8 +78,7 @@ class PCA():
             Y = (X.T @ X)
         Y /= X.shape[1]
 
-        mempool = cp.get_default_memory_pool()
-        mempool.free_all_blocks()
+        cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
         return Y
@@ -87,8 +89,7 @@ class PCA():
         L, V = cp.linalg.eigh(Y)
 
         del Y
-        mempool = cp.get_default_memory_pool()
-        mempool.free_all_blocks()
+        cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
         return L, V
@@ -97,8 +98,7 @@ class PCA():
         Xr = cp.array([
             cp.random.permutation(row) for row in X
         ])
-        mempool = cp.get_default_memory_pool()
-        mempool.free_all_blocks()
+        cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
         return Xr
