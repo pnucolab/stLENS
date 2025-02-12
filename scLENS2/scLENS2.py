@@ -163,36 +163,95 @@ class scLENS2():
         return pd.DataFrame(self.X), data
        
     
-    def _preprocess_rand(self, X, inplace=True):
-        """Preprocessing that does not save data statistics"""
+    # def _preprocess_rand(self, X, inplace=True):
+    #     """Preprocessing that does not save data statistics"""
+    #     if not inplace:
+    #         X = X.copy()
+    
+    #     # L1 정규화 및 로그 변환
+    #     l1_norm = cp.linalg.norm(X, ord=1, axis=1)
+    #     X = X / l1_norm[:, cp.newaxis]
+    #     del l1_norm
+    #     cp.get_default_memory_pool().free_all_blocks()
+    #     X += 1
+    #     X = cp.log(X)
+    
+    #     # Z-score 정규화
+    #     mean = cp.mean(X, axis=0)
+    #     std = cp.std(X, axis=0)
+    #     X = (X - mean) / std
+    #     del mean, std
+    #     cp.get_default_memory_pool().free_all_blocks()
+    
+    #     # L2 정규화
+    #     l2_norm = cp.linalg.norm(X, ord=2, axis=1)
+    #     X = X / l2_norm[:, cp.newaxis]
+    #     X *= cp.mean(l2_norm)
+    #     del l2_norm
+    #     cp.get_default_memory_pool().free_all_blocks()
+    #     X -= cp.mean(X, axis=0)
+
+    #     cp.get_default_pinned_memory_pool().free_all_blocks()
+    #     gc.collect()
+    #     return X
+
+    def _preprocess_rand(self, X, inplace=True, batch_size=10000):
+        """Preprocessing that does not save data statistics using batch processing"""
         if not inplace:
             X = X.copy()
-    
-        # L1 정규화 및 로그 변환
-        l1_norm = cp.linalg.norm(X, ord=1, axis=1)
-        X = X / l1_norm[:, cp.newaxis]
-        del l1_norm
-        cp.get_default_memory_pool().free_all_blocks()
-        X += 1
-        X = cp.log(X)
-    
+
+        num_samples = X.shape[0]
+
+        # L1 정규화 및 로그 변환 (배치 처리)
+        for i in range(0, num_samples, batch_size):
+            batch = X[i:i + batch_size]
+            l1_norm = cp.linalg.norm(batch, ord=1, axis=1, keepdims=True)
+            batch /= l1_norm
+            del l1_norm
+            batch += 1
+            X[i:i + batch_size] = cp.log(batch)
+            del batch
+            cp.get_default_memory_pool().free_all_blocks()
+
         # Z-score 정규화
-        mean = cp.mean(X, axis=0)
-        std = cp.std(X, axis=0)
-        X = (X - mean) / std
+        mean = cp.mean(X, axis=0, keepdims=True)
+        std = cp.std(X, axis=0, keepdims=True)
+
+        for i in range(0, num_samples, batch_size):
+            batch = X[i:i + batch_size]
+            batch = (batch - mean) / std
+            X[i:i + batch_size] = batch
+            del batch
+            cp.get_default_memory_pool().free_all_blocks()
+
         del mean, std
         cp.get_default_memory_pool().free_all_blocks()
-    
-        # L2 정규화
-        l2_norm = cp.linalg.norm(X, ord=2, axis=1)
-        X = X / l2_norm[:, cp.newaxis]
-        X *= cp.mean(l2_norm)
-        del l2_norm
-        cp.get_default_memory_pool().free_all_blocks()
-        X -= cp.mean(X, axis=0)
 
+        # L2 정규화 (배치 처리)
+        for i in range(0, num_samples, batch_size):
+            batch = X[i:i + batch_size]
+            l2_norm = cp.linalg.norm(batch, ord=2, axis=1, keepdims=True)
+            mean_l2 = cp.mean(l2_norm)
+            batch /= l2_norm
+            batch *= mean_l2
+            X[i:i + batch_size] = batch
+            del batch, l2_norm, mean_l2
+            cp.get_default_memory_pool().free_all_blocks()
+
+        # 평균 제거
+        mean_X = cp.mean(X, axis=0, keepdims=True)
+        for i in range(0, num_samples, batch_size):
+            batch = X[i:i + batch_size]
+            batch -= mean_X
+            X[i:i + batch_size] = batch
+            del batch
+            cp.get_default_memory_pool().free_all_blocks()
+
+        del mean_X
+        cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
+
         return X
 
     def fit_transform(self, data=None, eigen_solver='wishart', plot_mp = False):
@@ -372,6 +431,22 @@ class scLENS2():
     
         return comp
     
+    # def _PCA_rand(self, X, n, use_numpy_if_oom=True, batch_size=5000):
+    #     try:
+    #         W = (X.T @ X) / X.shape[1]
+    #         _, V = cp.linalg.eigh(W)  # 기본적으로 CuPy 연산 수행
+    #     except cp.cuda.memory.OutOfMemoryError:
+    #         if use_numpy_if_oom:
+    #             print("Out of memory detected, switching to NumPy.")
+    #             X = cp.asnumpy(X)  # NumPy 변환
+    #             W = (X.T @ X) / X.shape[1]
+    #             _, V = np.linalg.eigh(W)  # NumPy 연산 사용
+    #             return cp.asarray(V)  # 다시 CuPy 배열로 변환
+    #         else:
+    #             raise  # OOM 발생 시 예외를 그대로 전달
+
+    #     return V
+
     def _PCA_rand(self, X, n):
         # W = (X @ X.T)
         if X.shape[0] <= X.shape[1]:
@@ -379,10 +454,14 @@ class scLENS2():
         else:
             W = (X.T @ X)
         W /= X.shape[1]
+        del X
+        cp.get_default_memory_pool().free_all_blocks()
         _, V = cp.linalg.eigh(W)
+        del W
+        cp.get_default_memory_pool().free_all_blocks()
         V = V[:, -n:]
 
-        del W, _
+        del _
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
