@@ -3,7 +3,7 @@ import cupy as cp
 import pandas as pd
 from scipy import stats, linalg
 import scipy
-import scipy.sparse as sp 
+import scipy.sparse as sp
 import numpy as np
 from tqdm.auto import tqdm
 
@@ -21,18 +21,22 @@ import psutil
 import os
 import gc
 
+import dask.array as da
+import dask.distributed
+from dask import delayed
+
 from .PCA import PCA
 
-
 class scLENS2():
-    def __init__(self, sparsity='auto', 
-                 sparsity_step = 0.001, 
-                 sparsity_threshold=0.9, 
-                 perturbed_n_scale = 2, 
-                 device = None,
+    def __init__(self, sparsity='auto',
+                 sparsity_step=0.001,
+                 sparsity_threshold=0.9,
+                 perturbed_n_scale=2,
+                 device=None,
                  n_rand_matrix=20,
                  threshold=0.3420201433256688,
-                 data = None):
+                 data=None,
+                 chunk_size='auto'):  # chunk_size 추가
         self.L = None
         self.V = None
         self.L_mp = None
@@ -47,11 +51,12 @@ class scLENS2():
         self.n_rand_matrix = n_rand_matrix
         self.threshold = threshold
         self.data = data
+        self.chunk_size = chunk_size  # 청크 크기 설정
+        self.chunk_size = (5000, 5000)
 
-
-    def preprocess(self, data, min_tp=0, min_genes_per_cell=200, min_cells_per_gene=15, cell_cutoff=None, ensure_cells_greater_than_genes=False, plot=False):
+    def preprocess(self, data, min_tp=0, min_genes_per_cell=200, min_cells_per_gene=15, plot=False):
         if isinstance(data, pd.DataFrame):
-            if not data.index.is_unique: 
+            if not data.index.is_unique:
                 print("Cell names are not unique, resetting cell names")
                 data.index = range(len(data.index))
 
@@ -59,141 +64,127 @@ class scLENS2():
                 print("Removing duplicate genes")
                 data = data.loc[:, ~data.columns.duplicated()]
 
-            # DataFrame을 numpy로 변환
-            data_array = data.values  
+            data_array = data.values
+
         elif isinstance(data, sc.AnnData):
-            data_array = data.X  # AnnData의 .X 속성은 numpy 배열로 사용
+            data_array = data.X  
         else:
             data_array = data
 
         if isinstance(data_array, sp.spmatrix):
-
-            gene_sum = data_array.sum(axis=0).A1  
-            cell_sum = data_array.sum(axis=1).A1
-
+            gene_sum = np.asarray(data_array.sum(axis=0)).flatten()
+            cell_sum = np.asarray(data_array.sum(axis=1)).flatten()
             data_array = data_array.toarray()
-            non_zero_genes = np.count_nonzero(data_array, axis=0)
-            non_zero_cells = np.count_nonzero(data_array, axis=1) 
-            
         else:
-            non_zero_genes = np.count_nonzero(data_array, axis=0)
-            non_zero_cells = np.count_nonzero(data_array, axis=1)
             gene_sum = np.sum(data_array, axis=0)
             cell_sum = np.sum(data_array, axis=1)
+
+        non_zero_genes = np.count_nonzero(data_array, axis=0)
+        non_zero_cells = np.count_nonzero(data_array, axis=1)
 
         self.normal_genes = np.where((gene_sum > min_tp) & (non_zero_genes >= min_cells_per_gene))[0]
         self.normal_cells = np.where((cell_sum > min_tp) & (non_zero_cells >= min_genes_per_cell))[0]
 
-        # 추가메모리 해제
+        print(gene_sum.shape, cell_sum.shape, non_zero_genes.shape, non_zero_cells.shape)
+        print("self.ng:", self.normal_genes.shape, "self.nc:", self.normal_cells.shape)
+
         del gene_sum, cell_sum, non_zero_genes, non_zero_cells
         gc.collect()
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.cuda.Device(0).synchronize()
 
-        # 필터링된 데이터
         self._raw = data_array[self.normal_cells][:, self.normal_genes]
-
-        print(f'Removed {data_array.shape[0] - len(self.normal_cells)} cells and '
-              f'{data_array.shape[1] - len(self.normal_genes)} genes in QC')
-        
-        # 추가메모리 해제
         del data_array
         gc.collect()
-                
-        X = cp.array(self._raw, dtype=cp.float32)
-        # # 추가메모리 해제
-        # del self._raw
-        # gc.collect()
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.cuda.Device(0).synchronize()
 
-        # L1 정규화 및 로그 변환
-        l1_norm = cp.linalg.norm(X, ord=1, axis=1)
-        X = X / l1_norm[:, cp.newaxis]
-        X += 1
-        X = cp.log(X)
-        # 추가메모리 해제
+        print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and '
+              f'{data.shape[1] - len(self.normal_genes)} genes in QC')
+
+        X = da.from_array(self._raw, chunks=self.chunk_size)
+
+        l1_norm = da.linalg.norm(X, ord=1, axis=1, keepdims=True)
+        print(l1_norm)
+        X /= l1_norm
         del l1_norm
         gc.collect()
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.cuda.Device(0).synchronize()
 
-        # Z-score 정규화
-        mean = cp.mean(X, axis=0)
-        std = cp.std(X, axis=0)
+        X = da.log(X + 1)
+
+        mean = da.mean(X, axis=0)
+        std = da.std(X, axis=0)
         X = (X - mean) / std
-        # 추가메모리 해제
+        print("mean:",mean, "std:",std)
         del mean, std
         gc.collect()
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.cuda.Device(0).synchronize()
 
-        # L2 정규화
-        l2_norm = cp.linalg.norm(X, ord=2, axis=1)
-        X = X / l2_norm[:, cp.newaxis]
-        X *= cp.mean(l2_norm)
-        X -= cp.mean(X, axis=0)
-        # 추가메모리 해제
+        l2_norm = da.linalg.norm(X, ord=2, axis=1, keepdims=True)
+        print(l2_norm)
+        X /= l2_norm
+        X *= da.mean(l2_norm)
+        X -= da.mean(X, axis=0)
         del l2_norm
         gc.collect()
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.cuda.Device(0).synchronize()
 
-        # cupy -> numpy 변환
-        self.X = cp.asnumpy(X)
-        self.preprocessed = True
+        X = da.map_blocks(cp.asarray, X, dtype=cp.float32).persist()
 
+        gc.collect()
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.cuda.Device(0).synchronize()
+
+        X_parts = [X.blocks[i].compute() for i in range(X.blocks.shape[0])]
+
+        del X
+        gc.collect()
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.cuda.Device(0).synchronize()
+
+        self.X = cp.concatenate(X_parts, axis=0)
+
+        del X_parts
+        gc.collect()
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.cuda.Device(0).synchronize()
+        
         data = data[self.normal_cells, self.normal_genes]
 
         if plot:
             fig1, axs1 = plt.subplots(1, 2, figsize=(10, 5))
             raw = self._raw
-            clean = X  
+            clean = self.X 
 
-            axs1[0].hist(np.average(raw, axis=1), bins=100)
-            axs1[1].hist(np.average(clean.get(), axis=1), bins=100)
+            # CuPy 배열을 바로 가져와서 NumPy로 변환 없이 처리
+            axs1[0].hist(np.mean(raw, axis=1), bins=100)
+            axs1[1].hist(cp.mean(clean, axis=1).get(), bins=100) 
             fig1.suptitle('Mean of Gene Expression along Cells')
-
             fig2, axs2 = plt.subplots(1, 2, figsize=(10, 5))
             axs2[0].hist(np.std(raw, axis=0), bins=100)
-            axs2[1].hist(np.std(clean.get(), axis=0), bins=100)
+            axs2[1].hist(cp.std(clean, axis=0).get(), bins=100) 
             fig2.suptitle('SD of Gene Expression for each Gene')
 
-            # anndata에 그림 저장
             if isinstance(data, sc.AnnData):
                 data.uns['preprocess_mean_plot'] = fig1
                 data.uns['preprocess_sd_plot'] = fig2
 
-        del X
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.cuda.Device(0).synchronize()
 
         self.data = data
-        return pd.DataFrame(self.X), data
-       
-    
-    # def _preprocess_rand(self, X, inplace=True):
-    #     """Preprocessing that does not save data statistics"""
-    #     if not inplace:
-    #         X = X.copy()
-    
-    #     # L1 정규화 및 로그 변환
-    #     l1_norm = cp.linalg.norm(X, ord=1, axis=1)
-    #     X = X / l1_norm[:, cp.newaxis]
-    #     del l1_norm
-    #     cp.get_default_memory_pool().free_all_blocks()
-    #     X += 1
-    #     X = cp.log(X)
-    
-    #     # Z-score 정규화
-    #     mean = cp.mean(X, axis=0)
-    #     std = cp.std(X, axis=0)
-    #     X = (X - mean) / std
-    #     del mean, std
-    #     cp.get_default_memory_pool().free_all_blocks()
-    
-    #     # L2 정규화
-    #     l2_norm = cp.linalg.norm(X, ord=2, axis=1)
-    #     X = X / l2_norm[:, cp.newaxis]
-    #     X *= cp.mean(l2_norm)
-    #     del l2_norm
-    #     cp.get_default_memory_pool().free_all_blocks()
-    #     X -= cp.mean(X, axis=0)
+        self.preprocessed = True
 
-    #     cp.get_default_pinned_memory_pool().free_all_blocks()
-    #     gc.collect()
-    #     return X
+        gc.collect()
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.cuda.Device(0).synchronize()
+        
+        return self.X , data
 
     def _preprocess_rand(self, X, inplace=True, batch_size=10000):
         """Preprocessing that does not save data statistics using batch processing"""
@@ -208,10 +199,18 @@ class scLENS2():
             l1_norm = cp.linalg.norm(batch, ord=1, axis=1, keepdims=True)
             batch /= l1_norm
             del l1_norm
-            batch += 1
-            X[i:i + batch_size] = cp.log(batch)
-            del batch
+            gc.collect()
             cp.get_default_memory_pool().free_all_blocks()
+            cp.cuda.Device(0).synchronize()
+            
+            batch += 1
+            # 17일 수정
+            # cp -> np
+            X[i:i + batch_size] = np.log(batch)
+            del batch
+            gc.collect()
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.cuda.Device(0).synchronize()
 
         # Z-score 정규화
         mean = cp.mean(X, axis=0, keepdims=True)
@@ -222,21 +221,29 @@ class scLENS2():
             batch = (batch - mean) / std
             X[i:i + batch_size] = batch
             del batch
+            gc.collect()
             cp.get_default_memory_pool().free_all_blocks()
+            cp.cuda.Device(0).synchronize()
 
         del mean, std
+        gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
-
+        cp.cuda.Device(0).synchronize()
         # L2 정규화 (배치 처리)
         for i in range(0, num_samples, batch_size):
-            batch = X[i:i + batch_size]
+            # 17일 수정
+            batch = cp.asarray(X[i:i + batch_size])
             l2_norm = cp.linalg.norm(batch, ord=2, axis=1, keepdims=True)
             mean_l2 = cp.mean(l2_norm)
             batch /= l2_norm
             batch *= mean_l2
-            X[i:i + batch_size] = batch
+            # 17일 수정
+            # batch가 cupy여서 get 추가
+            X[i:i + batch_size] = batch.get()
             del batch, l2_norm, mean_l2
+            gc.collect()
             cp.get_default_memory_pool().free_all_blocks()
+            cp.cuda.Device(0).synchronize()
 
         # 평균 제거
         mean_X = cp.mean(X, axis=0, keepdims=True)
@@ -245,14 +252,17 @@ class scLENS2():
             batch -= mean_X
             X[i:i + batch_size] = batch
             del batch
+            gc.collect()
             cp.get_default_memory_pool().free_all_blocks()
+            cp.cuda.Device(0).synchronize()
 
         del mean_X
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.cuda.Device(0).synchronize()
 
         return X
+       
 
     def fit_transform(self, data=None, eigen_solver='wishart', plot_mp = False):
         
@@ -267,22 +277,21 @@ class scLENS2():
                 self.X = data
             else:
                 raise ValueError("Data must be a pandas DataFrame or cupy ndarray")
-        
-        X = cp.array(self.X, dtype=cp.float32)
-       
-        pca_result = self._PCA(X, plot_mp = plot_mp)
+        # 16일 수정
+        pca_result = self._PCA(self.X, plot_mp = plot_mp)
         self._signal_components = pca_result[1]
 
-        del X
+        gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
-        gc.collect()
 
         if self.sparsity == 'auto':
             self._calculate_sparsity()
             
         if self.preprocessed:
-            raw = cp.array(self._raw, dtype=cp.float32)
+            # 16일 수정
+            # raw = cp.array(self._raw, dtype=cp.float32)
+            raw = self._raw
 
         n = min(self._signal_components.shape[1] * self._perturbed_n_scale, self.X.shape[1])
         
@@ -293,8 +302,10 @@ class scLENS2():
                                     density=1-self.sparsity, 
                                     format='csr')
             rand.data[:] = 1
-            rand = cp.array(rand.toarray())
-        
+            # 16일 수정
+            # rand = cp.array(rand.toarray())
+            rand = rand.toarray()
+
             # Construct perturbed components
             rand += raw
             rand = self._preprocess_rand(rand)
@@ -307,9 +318,10 @@ class scLENS2():
             pert_vecs.append(perturbed[:, pert_select])
 
             del rand, perturbed, pert_select
+            gc.collect()
             cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
-            gc.collect()
+            
         
         pert_scores = list()
         for i in range(self.n_rand_matrix):
@@ -326,11 +338,10 @@ class scLENS2():
         self.robust_scores = pert_scores
 
         del raw, pert_scores, pert_vecs
+        gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
-        gc.collect()
-
-
+        
         if self.X.shape[0] <= self.X.shape[1]:
             self.data.obsm['PCA_scLENS'] = self.X_transform
         else:
@@ -338,7 +349,6 @@ class scLENS2():
 
         return self.X_transform
     
-        
         
     def _calculate_sparsity(self):
         """Automatic sparsity level calculation"""
@@ -357,9 +367,14 @@ class scLENS2():
         # Construct binarized data matrix
         bin = scipy.sparse.csr_array(self._raw)
         bin.data[:] = 1.
-        bin = cp.array(bin.toarray(), dtype=cp.float32)
+        # 16일 수정
+        # bin = cp.array(bin.toarray(), dtype=cp.float32)
+        bin = bin.toarray()
         Vb = self._PCA_rand(self._preprocess_rand(bin, inplace=False), bin.shape[0])
         n_vbp = Vb.shape[1]//2
+        gc.collect()
+        cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
 
         n_buffer = 5
         buffer = [1] * n_buffer
@@ -369,35 +384,41 @@ class scLENS2():
             idx = [x[selection] for x in zero_idx]
 
             # Construct perturbed data matrix
-            pert = cp.zeros_like(bin)
+            # 16일 수정
+            # pert = cp.zeros_like(bin)
+            pert = np.zeros_like(bin)
             pert[tuple(idx)] = 1
             pert += bin
 
             del idx
+            gc.collect()
             cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
-            gc.collect()
+            
             
             pert = self._preprocess_rand(pert)
             if pert.shape[0] <= pert.shape[1]:
                 pert = pert @ pert.T
             else:
                 pert = pert.T @ pert
-            pert /= pert.shape[1]
-            # pert = pert @ pert.T
-            # pert /= pert.shape[1]
+            pert /= pert.shape[1]  # numpy
+
+            # 18일 수정
+            # pert가 numpy여서 cupy로 바꾼 후 eigenvalue decomposition
+            pert = cp.asarray(pert)
             Vbp = cp.linalg.eigh(pert)[1][:, -n_vbp:]
             
             del pert
+            gc.collect()
             cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
-            gc.collect()
 
             corr_arr = cp.max(cp.abs(Vb.T @ Vbp), axis=0).get()
-            del Vbp  # 사용 끝난 변수 삭제
+            del Vbp  
+            gc.collect()
             cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
-            gc.collect()
+
             corr = np.sort(corr_arr)[1]
             
             buffer.pop(0)
@@ -411,9 +432,9 @@ class scLENS2():
             
             sparse -= self.sparsity_step
         del bin, Vb, selection
+        gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
-        gc.collect()
         
     def _PCA(self, X, plot_mp = False):
         pca = PCA(device = self.device)
@@ -454,17 +475,26 @@ class scLENS2():
         else:
             W = (X.T @ X)
         W /= X.shape[1]
+        
         del X
+        gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+
+        W = cp.asarray(W)
         _, V = cp.linalg.eigh(W)
+
         del W
+        gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
+        cp.get_default_pinned_memory_pool().free_all_blocks()
+
         V = V[:, -n:]
 
         del _
+        gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
-        gc.collect()
 
         return V
 
@@ -484,5 +514,3 @@ class scLENS2():
         if isinstance(self.data, sc.AnnData):
             self.data.uns['robust_score_plot'] = fig1
         
-
-    

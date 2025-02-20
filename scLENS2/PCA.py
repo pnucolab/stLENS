@@ -95,12 +95,14 @@ class PCA():
         return L, V
 
     def _random_matrix(self, X):
+        
         Xr = cp.array([
             cp.random.permutation(row) for row in X
         ])
+
+        gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
-        gc.collect()
         return Xr
     
 
