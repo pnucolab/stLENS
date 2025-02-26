@@ -54,135 +54,101 @@ class scLENS2():
         self.chunk_size = chunk_size  # 청크 크기 설정
         self.chunk_size = (5000, 5000)
 
-    def preprocess(self, data, min_tp=0, min_genes_per_cell=200, min_cells_per_gene=15, plot=False):
-        if isinstance(data, pd.DataFrame):
-            if not data.index.is_unique:
-                print("Cell names are not unique, resetting cell names")
-                data.index = range(len(data.index))
+    def preprocess(self, data, plot=False):
+        def filtering(data, min_tp=0, min_genes_per_cell=200, min_cells_per_gene=15):
+            if isinstance(data, pd.DataFrame):
+                if not data.index.is_unique:
+                    print("Cell names are not unique, resetting cell names")
+                    data.index = range(len(data.index))
 
-            if not data.columns.is_unique:
-                print("Removing duplicate genes")
-                data = data.loc[:, ~data.columns.duplicated()]
+                if not data.columns.is_unique:
+                    print("Removing duplicate genes")
+                    data = data.loc[:, ~data.columns.duplicated()]
 
-            data_array = data.values
+                data_array = data.values
 
-        elif isinstance(data, sc.AnnData):
-            data_array = data.X  
-        else:
-            data_array = data
+            elif isinstance(data, sc.AnnData):
+                print("adata -> sparse")
+                data_array = data.X  
+            else:
+                data_array = data
 
-        if isinstance(data_array, sp.spmatrix):
-            gene_sum = np.asarray(data_array.sum(axis=0)).flatten()
-            cell_sum = np.asarray(data_array.sum(axis=1)).flatten()
-            data_array = data_array.toarray()
-        else:
-            gene_sum = np.sum(data_array, axis=0)
-            cell_sum = np.sum(data_array, axis=1)
+            if isinstance(data_array, sp.spmatrix):
+                print("issparse!")
+                gene_sum = np.asarray(data_array.sum(axis=0)).flatten()
+                cell_sum = np.asarray(data_array.sum(axis=1)).flatten()
+                non_zero_genes = data_array.getnnz(axis = 0)
+                non_zero_cells = data_array.getnnz(axis = 1)
+            else:
+                print("is not sparse")
+                gene_sum = np.sum(data_array, axis=0)
+                cell_sum = np.sum(data_array, axis=1)
+                non_zero_genes = np.count_nonzero(data_array, axis=0)
+                non_zero_cells = np.count_nonzero(data_array, axis=1)
 
-        non_zero_genes = np.count_nonzero(data_array, axis=0)
-        non_zero_cells = np.count_nonzero(data_array, axis=1)
+            self.normal_genes = np.where((gene_sum > min_tp) & (non_zero_genes >= min_cells_per_gene))[0]
+            self.normal_cells = np.where((cell_sum > min_tp) & (non_zero_cells >= min_genes_per_cell))[0]
 
-        self.normal_genes = np.where((gene_sum > min_tp) & (non_zero_genes >= min_cells_per_gene))[0]
-        self.normal_cells = np.where((cell_sum > min_tp) & (non_zero_cells >= min_genes_per_cell))[0]
+            del gene_sum, cell_sum, non_zero_genes, non_zero_cells
 
-        print(gene_sum.shape, cell_sum.shape, non_zero_genes.shape, non_zero_cells.shape)
-        print("self.ng:", self.normal_genes.shape, "self.nc:", self.normal_cells.shape)
+            _raw = data_array[self.normal_cells][:, self.normal_genes]
+            del data_array
 
-        del gene_sum, cell_sum, non_zero_genes, non_zero_cells
-        gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.cuda.Device(0).synchronize()
+            print("sparse -> array")
+            _raw = _raw.toarray()
 
-        self._raw = data_array[self.normal_cells][:, self.normal_genes]
-        del data_array
-        gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.cuda.Device(0).synchronize()
+            print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and '
+                    f'{data.shape[1] - len(self.normal_genes)} genes in QC')
+            
+            return _raw
 
-        print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and '
-              f'{data.shape[1] - len(self.normal_genes)} genes in QC')
+        def normalize(_raw):
+            chunk_size = (8000,8000)
+            X = da.from_array(_raw, chunks=chunk_size)
+            l1_norm = da.linalg.norm(X, ord=1, axis=1, keepdims=True)
+            X /= l1_norm
+            del l1_norm
 
-        X = da.from_array(self._raw, chunks=self.chunk_size)
+            X = da.log(X + 1)
 
-        l1_norm = da.linalg.norm(X, ord=1, axis=1, keepdims=True)
-        print(l1_norm)
-        X /= l1_norm
-        del l1_norm
-        gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.cuda.Device(0).synchronize()
+            mean = da.mean(X, axis=0)
+            std = da.std(X, axis=0)
+            X = (X - mean) / std
+            del mean, std
 
-        X = da.log(X + 1)
+            l2_norm = da.linalg.norm(X, ord=2, axis=1, keepdims=True)
+            X /= l2_norm
+            X *= da.mean(l2_norm)
+            X -= da.mean(X, axis=0)
+            del l2_norm
 
-        mean = da.mean(X, axis=0)
-        std = da.std(X, axis=0)
-        X = (X - mean) / std
-        print("mean:",mean, "std:",std)
-        del mean, std
-        gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.cuda.Device(0).synchronize()
-
-        l2_norm = da.linalg.norm(X, ord=2, axis=1, keepdims=True)
-        print(l2_norm)
-        X /= l2_norm
-        X *= da.mean(l2_norm)
-        X -= da.mean(X, axis=0)
-        del l2_norm
-        gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.cuda.Device(0).synchronize()
-
-        X = da.map_blocks(cp.asarray, X, dtype=cp.float32).persist()
-
-        gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.cuda.Device(0).synchronize()
-
-        X_parts = [X.blocks[i].compute() for i in range(X.blocks.shape[0])]
-
-        del X
-        gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.cuda.Device(0).synchronize()
-
-        self.X = cp.concatenate(X_parts, axis=0)
-
-        del X_parts
-        gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.cuda.Device(0).synchronize()
+            return X
         
-        data = data[self.normal_cells, self.normal_genes]
+        _raw = filtering(df)
+
+        normalized_X = normalize(_raw)
+        np_X = normalized_X.compute()
+        self.X = np_X
+        
+        data = data[self.normal_cells, self.normal_genes] # anndata 크기 업데이트
 
         if plot:
             fig1, axs1 = plt.subplots(1, 2, figsize=(10, 5))
-            raw = self._raw
-            clean = self.X 
+            raw = _raw
+            clean = self.X
 
             # CuPy 배열을 바로 가져와서 NumPy로 변환 없이 처리
             axs1[0].hist(np.mean(raw, axis=1), bins=100)
-            axs1[1].hist(cp.mean(clean, axis=1).get(), bins=100) 
+            axs1[1].hist(cp.mean(clean, axis=1), bins=100) 
             fig1.suptitle('Mean of Gene Expression along Cells')
             fig2, axs2 = plt.subplots(1, 2, figsize=(10, 5))
             axs2[0].hist(np.std(raw, axis=0), bins=100)
-            axs2[1].hist(cp.std(clean, axis=0).get(), bins=100) 
+            axs2[1].hist(cp.std(clean, axis=0), bins=100) 
             fig2.suptitle('SD of Gene Expression for each Gene')
 
             if isinstance(data, sc.AnnData):
                 data.uns['preprocess_mean_plot'] = fig1
                 data.uns['preprocess_sd_plot'] = fig2
-
-        gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.cuda.Device(0).synchronize()
-
-        self.data = data
-        self.preprocessed = True
-
-        gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.cuda.Device(0).synchronize()
         
         return self.X , data
 
