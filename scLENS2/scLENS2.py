@@ -95,7 +95,7 @@ class scLENS2():
             del data_array
 
             print("sparse -> array")
-            _raw = _raw.toarray()
+            # _raw = _raw.toarray()
 
             print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and '
                     f'{data.shape[1] - len(self.normal_genes)} genes in QC')
@@ -124,7 +124,7 @@ class scLENS2():
 
             return X
         
-        _raw = filtering(df)
+        _raw = filtering(data)
 
         normalized_X = normalize(_raw)
         np_X = normalized_X.compute()
