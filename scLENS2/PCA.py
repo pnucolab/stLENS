@@ -23,6 +23,10 @@ class PCA():
         calc = Calc()
         self.n_cells, self.n_genes = X.shape
 
+        if isinstance(X, np.ndarray):
+            X = cp.array(X)
+        self.X = X
+
         if eigen_solver == 'wishart':
             self.L, self.V = self._get_eigen(X)
             Xr = self._random_matrix(X)

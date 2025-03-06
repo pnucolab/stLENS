@@ -91,16 +91,18 @@ class scLENS2():
 
             del gene_sum, cell_sum, non_zero_genes, non_zero_cells
 
-            _raw = data_array[self.normal_cells][:, self.normal_genes]
+            self._raw = data_array[self.normal_cells][:, self.normal_genes]
             del data_array
 
             print("sparse -> array")
-            # _raw = _raw.toarray()
+            if isinstance(data, sc.AnnData):
+                if scipy.sparse.issparse(self._raw):
+                    self._raw = self._raw.toarray()  # df는 필요 없음
 
             print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and '
                     f'{data.shape[1] - len(self.normal_genes)} genes in QC')
             
-            return _raw
+            return self._raw
 
         def normalize(_raw):
             chunk_size = (8000,8000)
@@ -149,6 +151,9 @@ class scLENS2():
             if isinstance(data, sc.AnnData):
                 data.uns['preprocess_mean_plot'] = fig1
                 data.uns['preprocess_sd_plot'] = fig2
+
+            self.data = data
+            self.preprocessed = True
         
         return self.X , data
 
