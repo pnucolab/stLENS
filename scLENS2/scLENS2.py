@@ -54,84 +54,90 @@ class scLENS2():
         self.chunk_size = chunk_size  # 청크 크기 설정
         self.chunk_size = (5000, 5000)
 
-    def preprocess(self, data, plot=False):
-        def filtering(data, min_tp=0, min_genes_per_cell=200, min_cells_per_gene=15):
-            if isinstance(data, pd.DataFrame):
-                if not data.index.is_unique:
-                    print("Cell names are not unique, resetting cell names")
-                    data.index = range(len(data.index))
+    def filtering(self, data, min_tp=0, min_genes_per_cell=200, min_cells_per_gene=15):
+        if isinstance(data, pd.DataFrame):
+            if not data.index.is_unique:
+                print("Cell names are not unique, resetting cell names")
+                data.index = range(len(data.index))
 
-                if not data.columns.is_unique:
-                    print("Removing duplicate genes")
-                    data = data.loc[:, ~data.columns.duplicated()]
+            if not data.columns.is_unique:
+                print("Removing duplicate genes")
+                data = data.loc[:, ~data.columns.duplicated()]
 
-                data_array = data.values
+            data_array = data.values
 
-            elif isinstance(data, sc.AnnData):
-                print("adata -> sparse")
-                data_array = data.X  
-            else:
-                data_array = data
+        elif isinstance(data, sc.AnnData):
+            print("adata -> sparse")
+            data_array = data.X  
+        else:
+            data_array = data
 
-            if isinstance(data_array, sp.spmatrix):
-                print("issparse!")
-                gene_sum = np.asarray(data_array.sum(axis=0)).flatten()
-                cell_sum = np.asarray(data_array.sum(axis=1)).flatten()
-                non_zero_genes = data_array.getnnz(axis = 0)
-                non_zero_cells = data_array.getnnz(axis = 1)
-            else:
-                print("is not sparse")
-                gene_sum = np.sum(data_array, axis=0)
-                cell_sum = np.sum(data_array, axis=1)
-                non_zero_genes = np.count_nonzero(data_array, axis=0)
-                non_zero_cells = np.count_nonzero(data_array, axis=1)
+        if isinstance(data_array, sp.spmatrix):
+            print("issparse!")
+            gene_sum = np.asarray(data_array.sum(axis=0)).flatten()
+            cell_sum = np.asarray(data_array.sum(axis=1)).flatten()
+            non_zero_genes = data_array.getnnz(axis = 0)
+            non_zero_cells = data_array.getnnz(axis = 1)
+        else:
+            print("is not sparse")
+            gene_sum = np.sum(data_array, axis=0)
+            cell_sum = np.sum(data_array, axis=1)
+            non_zero_genes = np.count_nonzero(data_array, axis=0)
+            non_zero_cells = np.count_nonzero(data_array, axis=1)
 
-            self.normal_genes = np.where((gene_sum > min_tp) & (non_zero_genes >= min_cells_per_gene))[0]
-            self.normal_cells = np.where((cell_sum > min_tp) & (non_zero_cells >= min_genes_per_cell))[0]
+        self.normal_genes = np.where((gene_sum > min_tp) & (non_zero_genes >= min_cells_per_gene))[0]
+        self.normal_cells = np.where((cell_sum > min_tp) & (non_zero_cells >= min_genes_per_cell))[0]
 
-            del gene_sum, cell_sum, non_zero_genes, non_zero_cells
+        del gene_sum, cell_sum, non_zero_genes, non_zero_cells
+        gc.collect()
 
-            self._raw = data_array[self.normal_cells][:, self.normal_genes]
-            del data_array
+        self._raw = data_array[self.normal_cells][:, self.normal_genes]
+        del data_array
+        gc.collect()
 
+        if isinstance(self._raw, sp.spmatrix):
             print("sparse -> array")
-            if isinstance(data, sc.AnnData):
-                if scipy.sparse.issparse(self._raw):
-                    self._raw = self._raw.toarray()  # df는 필요 없음
+            self._raw = self._raw.toarray()
 
-            print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and '
-                    f'{data.shape[1] - len(self.normal_genes)} genes in QC')
-            
-            return self._raw
-
-        def normalize(_raw):
-            chunk_size = (8000,8000)
-            X = da.from_array(_raw, chunks=chunk_size)
-            l1_norm = da.linalg.norm(X, ord=1, axis=1, keepdims=True)
-            X /= l1_norm
-            del l1_norm
-
-            X = da.log(X + 1)
-
-            mean = da.mean(X, axis=0)
-            std = da.std(X, axis=0)
-            X = (X - mean) / std
-            del mean, std
-
-            l2_norm = da.linalg.norm(X, ord=2, axis=1, keepdims=True)
-            X /= l2_norm
-            X *= da.mean(l2_norm)
-            X -= da.mean(X, axis=0)
-            del l2_norm
-
-            return X
+        print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and '
+                f'{data.shape[1] - len(self.normal_genes)} genes in QC')
         
-        _raw = filtering(data)
+        return self._raw
 
-        normalized_X = normalize(_raw)
+    def normalize(self, _raw):
+        chunk_size = (8000,8000)
+        X = da.from_array(_raw, chunks=chunk_size)
+        l1_norm = da.linalg.norm(X, ord=1, axis=1, keepdims=True)
+        X /= l1_norm
+        del l1_norm
+        gc.collect()
+
+        X = da.log(X + 1)
+
+        mean = da.mean(X, axis=0)
+        std = da.std(X, axis=0)
+        X = (X - mean) / std
+        del mean, std
+        gc.collect()
+
+        l2_norm = da.linalg.norm(X, ord=2, axis=1, keepdims=True)
+        X /= l2_norm
+        X *= da.mean(l2_norm)
+        X -= da.mean(X, axis=0)
+        del l2_norm
+        gc.collect()
+
+        return X
+    
+    def preprocess(self, data, plot=False):
+        _raw = self.filtering(data)
+
+        normalized_X = self.normalize(_raw)
         np_X = normalized_X.compute()
         self.X = np_X
-        
+        del np_X, normalized_X
+        gc.collect()
+
         data = data[self.normal_cells, self.normal_genes] # anndata 크기 업데이트
 
         if plot:
@@ -152,8 +158,8 @@ class scLENS2():
                 data.uns['preprocess_mean_plot'] = fig1
                 data.uns['preprocess_sd_plot'] = fig2
 
-            self.data = data
-            self.preprocessed = True
+        self.data = data
+        self.preprocessed = True
         
         return self.X , data
 
