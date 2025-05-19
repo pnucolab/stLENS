@@ -1,5 +1,6 @@
 from .calc import Calc
 
+import dask.array as da
 import pandas as pd
 import scanpy as sc
 import torch
@@ -14,7 +15,7 @@ import matplotlib.lines as mlines
 import gc
 
 class PCA():
-    def __init__(self,device = None, data = None): 
+    def __init__(self, device = None, data = None): 
         self.device = device
         self.data = data
 
@@ -22,10 +23,6 @@ class PCA():
     def fit(self, X=None, eigen_solver = 'wishart'):
         calc = Calc()
         self.n_cells, self.n_genes = X.shape
-
-        if isinstance(X, np.ndarray):
-            X = cp.array(X)
-        self.X = X
 
         if eigen_solver == 'wishart':
             self.L, self.V = self._get_eigen(X)
@@ -40,11 +37,11 @@ class PCA():
             self.explained_variance_ = (self.L**2) / self.n_cells
             self.total_variance_ = self.explained_variance_.sum()
 
-        
-            calc.L = self.L
+            calc.L = self.L 
             self.L_mp = calc._mp_calculation(self.L, self.Lr)
             calc.L_mp = self.L_mp
             self.lambda_c = calc._tw()
+            print("lambda_c:",self.lambda_c)
             self.peak = calc._mp_parameters(self.L_mp)['peak']
 
         else:
@@ -56,6 +53,7 @@ class PCA():
         noise_boolean = ((self.L < self.lambda_c) & (self.L > calc.b_minus))
         self.Vn = self.V[:, noise_boolean]
         self.Ln = self.L[noise_boolean]
+    
         self.n_components = len(self.Ls)
         print(f"Number of signal components: {self.n_components}")
 
@@ -71,26 +69,57 @@ class PCA():
             comp = self.Ls[:n_components], self.Vs[:n_components]
             return comp
         raise ValueError('n_components must be positive')
-
+    
     def _wishart_matrix(self, X):
+        # Y = (X.T @ X)
         
-        if X.shape[0] <= X.shape[1]:  
-            print("gene is more than cell")
+        if X.shape[0] <= X.shape[1]:
+            print('cell x cell matrix')
             Y = (X @ X.T)
-        else:  
-            print("cell is more than gene")
+        else:
+            print('gene x gene matrix')
             Y = (X.T @ X)
         Y /= X.shape[1]
+        return Y
+    
+    def to_gpu(self, Y):
+        chunk_size = (10000, Y.shape[1])
+        if isinstance(Y, da.core.Array):
+            Y_dask = Y
+        else : 
+            Y_dask = da.from_array(Y, chunks=chunk_size)
 
+        Y_gpu = cp.asarray(Y_dask.blocks[0])
+
+        chunk = len(Y_dask.chunks[0])
+        for i in range(1, chunk):
+            block = cp.asarray(Y_dask.blocks[i])
+            Y_gpu = cp.concatenate((Y_gpu, block), axis=0)
+
+            del block
+            gc.collect()
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+
+        del Y_dask, chunk_size, Y, chunk
+        gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
-        gc.collect()
-        return Y
 
-
+        print("Y_gpu :", Y_gpu.shape)
+        return Y_gpu
+    
     def _get_eigen(self, X):
         Y = self._wishart_matrix(X)
-        L, V = cp.linalg.eigh(Y)
+        if self.device=='gpu':
+            Y = self.to_gpu(Y)
+            print("EVD - GPU")
+            L, V = cp.linalg.eigh(Y)
+        elif self.device=='cpu':
+            print("EVD - cpu")
+            L, V = np.linalg.eigh(Y)
+        else:
+            print("The device can be either cpu or gpu.")
 
         del Y
         cp.get_default_memory_pool().free_all_blocks()
@@ -99,11 +128,24 @@ class PCA():
         return L, V
 
     def _random_matrix(self, X):
-        
-        Xr = cp.array([
-            cp.random.permutation(row) for row in X
-        ])
+        print("random matix")
 
+        # Xr = cp.array([
+        #     cp.random.permutation(row) for row in X
+        # ])
+        if isinstance(X, da.core.Array):
+            X_dask = X
+        else:
+            X_dask = da.from_array(X, chunks=(10000, X.shape[1]))
+        def shuffle_block(block):
+            for row in block:
+                np.random.shuffle(row)
+            return block
+
+        Xr_dask = X_dask.map_blocks(shuffle_block, dtype=X_dask.dtype)
+        Xr = Xr_dask.compute()
+
+        del X_dask, Xr_dask
         gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
