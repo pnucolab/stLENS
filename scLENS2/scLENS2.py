@@ -11,6 +11,7 @@ import torch
 import random
 import zarr
 import anndata
+import ctypes
 
 import matplotlib.pyplot as plt
 from matplotlib import rcParams
@@ -20,6 +21,7 @@ from matplotlib.offsetbox import AnchoredText
 import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
 import matplotlib.cm as cm
+
 
 import seaborn as sns
 
@@ -40,7 +42,7 @@ class scLENS2():
                  perturbed_n_scale=2,
                  device=None,
                  n_rand_matrix=20,
-                 threshold=0.3420201433256688,
+                 threshold=np.cos(np.deg2rad(60)),
                  data=None,
                  chunk_size='auto'):  # chunk_size 추가
         self.L = None
@@ -58,8 +60,16 @@ class scLENS2():
         self.threshold = threshold
         self.data = data
         self.chunk_size = chunk_size  # 청크 크기 설정
+        self.directory = None
 
-    def filtering(self, data, min_tp=0, min_genes_per_cell=200, min_cells_per_gene=15):
+    
+    def filtering(self,
+        data,
+        min_tp_c=0, min_tp_g=0, max_tp_c=np.inf, max_tp_g=np.inf,
+        min_genes_per_cell=200, max_genes_per_cell=0,
+        min_cells_per_gene=15, mito_percent=5., ribo_percent=0.
+    ):
+
         if isinstance(data, pd.DataFrame):
             if not data.index.is_unique:
                 print("Cell names are not unique, resetting cell names")
@@ -69,45 +79,85 @@ class scLENS2():
                 print("Removing duplicate genes")
                 data = data.loc[:, ~data.columns.duplicated()]
 
+            cell_names = data.index.to_numpy()
+            gene_names = data.columns.to_numpy()
             data_array = data.values
 
         elif isinstance(data, sc.AnnData):
-            print("adata -> sparse")
-            data_array = data.X  
+            cell_names = data.obs_names.to_numpy()
+            gene_names = data.var_names.to_numpy()
+            data_array = data.X
+
         else:
-            data_array = data
+            raise ValueError("Unsupported data type")
 
-        if isinstance(data_array, sp.spmatrix):
-            print("issparse!")
-            gene_sum = np.asarray(data_array.sum(axis=0)).flatten()
-            cell_sum = np.asarray(data_array.sum(axis=1)).flatten()
-            non_zero_genes = data_array.getnnz(axis = 0)
-            non_zero_cells = data_array.getnnz(axis = 1)
+        is_sparse = sp.issparse(data_array)
+        X = data_array.astype(np.float32)
+
+
+        n_cell_counts = (X != 0).sum(axis=0)  # gene axis
+        n_cell_sums = X.sum(axis=0)
+
+        bidx_1 = np.array(n_cell_sums > min_tp_g).flatten()
+        bidx_2 = np.array(n_cell_sums < max_tp_g).flatten()
+        bidx_3 = np.array(n_cell_counts >= min_cells_per_gene).flatten()
+
+        self.fg_idx = bidx_1 & bidx_2 & bidx_3  # gene index
+
+
+        n_gene_counts = (X != 0).sum(axis=1)  # cell axis
+        n_gene_sums = X.sum(axis=1)
+
+        cidx_1 = np.array(n_gene_sums > min_tp_c).flatten()
+        cidx_2 = np.array(n_gene_sums < max_tp_c).flatten()
+        cidx_3 = np.array(n_gene_counts >= min_genes_per_cell).flatten()
+
+        mito_mask = pd.Series(gene_names).str.contains(r"^MT-", case=False, regex=True).to_numpy()
+        if mito_percent == 0:
+            cidx_4 = np.ones_like(cidx_1, dtype=bool)
         else:
-            print("is not sparse")
-            gene_sum = np.sum(data_array, axis=0)
-            cell_sum = np.sum(data_array, axis=1)
-            non_zero_genes = np.count_nonzero(data_array, axis=0)
-            non_zero_cells = np.count_nonzero(data_array, axis=1)
+            mito_sum = X[:, mito_mask].sum(axis=1)
+            total_sum = X.sum(axis=1)
+            mito_ratio = np.array(mito_sum / total_sum).flatten()
+            cidx_4 = mito_ratio < (mito_percent / 100)
 
-        self.normal_genes = np.where((gene_sum > min_tp) & (non_zero_genes >= min_cells_per_gene))[0]
-        self.normal_cells = np.where((cell_sum > min_tp) & (non_zero_cells >= min_genes_per_cell))[0]
+        ribo_mask = pd.Series(gene_names).str.contains(r"^RP[SL]", case=False, regex=True).to_numpy()
+        if ribo_percent == 0:
+            cidx_5 = np.ones_like(cidx_1, dtype=bool)
+        else:
+            ribo_sum = X[:, ribo_mask].sum(axis=1)
+            total_sum = X.sum(axis=1)
+            ribo_ratio = np.array(ribo_sum / total_sum).flatten()
+            cidx_5 = ribo_ratio < (ribo_percent / 100)
 
-        del gene_sum, cell_sum, non_zero_genes, non_zero_cells
-        gc.collect()
+        # max_genes_per_cell 제한
+        if max_genes_per_cell == 0:
+            cidx_6 = np.ones_like(cidx_1, dtype=bool)
+        else:
+            cidx_6 = n_gene_counts < max_genes_per_cell
 
-        self._raw = data_array[self.normal_cells][:, self.normal_genes]
-        del data_array
-        gc.collect()
+        self.fc_idx = cidx_1 & cidx_2 & cidx_3 & cidx_4 & cidx_5 & cidx_6  # cell index
 
-        # if isinstance(self._raw, sp.spmatrix):
-        #     print("sparse -> array")
-        #     self._raw = self._raw.toarray()
+        if self.fc_idx.sum() > 0 and self.fg_idx.sum() > 0:
+            Xf = X[self.fc_idx][:, self.fg_idx]
 
-        print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and '
-                f'{data.shape[1] - len(self.normal_genes)} genes in QC')
-        
-        return self._raw
+            
+            valid_gene_mask = np.array(Xf.sum(axis=0) != 0).flatten()
+            Xf = Xf[:, valid_gene_mask]
+            self.final_gene_names = gene_names[self.fg_idx][valid_gene_mask]
+            self.final_cell_names = cell_names[self.fc_idx]
+
+            if sp.issparse(Xf):
+                self._raw = Xf
+            else:
+                self._raw = pd.DataFrame(Xf, index=self.final_cell_names, columns=self.final_gene_names)
+                self._raw = sp.csr_matrix(self._raw)
+
+            print(f"After filtering >> shape: {self._raw.shape}")
+            return self._raw
+        else:
+            print("There is no high quality cells and genes")
+            return None
 
     def normalize(self, _raw):
             
@@ -139,40 +189,61 @@ class scLENS2():
         return X
     
     def preprocess(self, data, plot=False):
-        
-        print("filtering")
         self._raw = self.filtering(data) # sparse
-        if sp.issparse(self._raw): 
-            # raw_ann = anndata.AnnData(X=self._raw)
-            # raw_ann.write(f"../{self._raw.shape[0]}/file/raw_ann.h5ad")
-            print("sparse -> dense")
-            self._raw = self._raw.toarray() # dense
-        normalized_X = self.normalize(self._raw)
-        normalized_X.to_zarr(f"../{self._raw.shape[0]}/file/normalized_X.zarr")
 
-        # self.X = normalized_X.compute()
-        
-        data = data[self.normal_cells, self.normal_genes] # anndata 크기 업데이트
-        del self.normal_cells, self.normal_genes
-        gc.collect()
+        normalized_X = self.normalize(self._raw.toarray())
+        normalized_X.to_zarr(f"{self.directory}/normalized_X.zarr")
 
+        data = data[self.fc_idx, self.fg_idx]
+        data.var_names = self.final_gene_names
+        data.obs_names = self.final_cell_names
+    
         if plot:
-            print("plotting")
+            print("plotting the result of preprocessing")
+            normalized_X = da.from_zarr(f"{self.directory}/normalized_X.zarr")
             self.X = normalized_X.compute()
-            fig1, axs1 = plt.subplots(1, 2, figsize=(10, 5))
 
-            axs1[0].hist(np.mean(self._raw, axis=1), bins=100)
-            axs1[1].hist(cp.mean(self.X, axis=1), bins=100) 
+            _raw = self._raw.toarray()
+
+            # CPU 계산: 평균, 표준편차
+            raw_mean = np.mean(_raw, axis=1)  # 각 cell별 평균
+            raw_std = np.std(_raw, axis=0)    # 각 gene별 표준편차
+
+            # GPU 계산(CuPy): 평균, 표준편차
+            X_mean = np.mean(self.X, axis=1)  # CuPy 배열을 numpy 배열로 변환
+            X_std = np.std(self.X, axis=0)
+
+            # DataFrame으로 변환
+            df_mean = pd.DataFrame({
+                'raw_mean': raw_mean,
+                'X_mean': X_mean
+            })
+
+            df_std = pd.DataFrame({
+                'raw_std': raw_std,
+                'X_std': X_std
+            })
+
+            # AnnData의 uns에 저장
+            if isinstance(data, sc.AnnData):
+                data.uns['preprocess_mean'] = df_mean
+                data.uns['preprocess_std'] = df_std
+
+                self.data = data
+
+            # 기존처럼 plot 그리기
+            fig1, axs1 = plt.subplots(1, 2, figsize=(10, 5))
+            axs1[0].hist(raw_mean, bins=100)
+            axs1[1].hist(X_mean, bins=100)
             fig1.suptitle('Mean of Gene Expression along Cells')
+
             fig2, axs2 = plt.subplots(1, 2, figsize=(10, 5))
-            axs2[0].hist(np.std(self._raw, axis=0), bins=100)
-            axs2[1].hist(cp.std(self.X, axis=0), bins=100) 
+            axs2[0].hist(raw_std, bins=100)
+            axs2[1].hist(X_std, bins=100)
             fig2.suptitle('SD of Gene Expression for each Gene')
 
-            if isinstance(data, sc.AnnData):
-                data.uns['preprocess_mean_plot'] = fig1
-                data.uns['preprocess_sd_plot'] = fig2
-
+            plt.show()
+            
         self.data = data
         self.preprocessed = True
 
@@ -204,74 +275,93 @@ class scLENS2():
             else:
                 raise ValueError("Data must be a pandas DataFrame or cupy ndarray")
         
-        self.X = da.from_zarr(f"../{self._raw.shape[0]}/file/normalized_X.zarr")
+        self.X = da.from_zarr(f"{self.directory}/normalized_X.zarr")
         pca_result = self._PCA(self.X, device = None, plot_mp = plot_mp)
 
-        eigenvalue, eigenvector = pca_result
-
         if self.X.shape[0] <= self.X.shape[1]:
-            self._signal_components = eigenvector
+            self._signal_components = pca_result[1]
         else:
-            eigenvalue = cp.asnumpy(eigenvalue)
-            eigenvector = cp.asnumpy(eigenvector)
-            cbyc = sclens.X @ eigenvector @ np.diag(np.sqrt(eigenvalue))
-            self._signal_components, _ = np.linalg.qr(cbyc)
-            self._signal_components = self._signal_components.compute()
-            self._signal_components = cp.asarray(self._signal_components)
+            eigenvalue = cp.asnumpy(pca_result[0])
+            _signal_components = cp.asnumpy(pca_result[1])
 
-        print(self._signal_components.shape)
+            re = self.X @ _signal_components @ np.diag(1/np.sqrt(eigenvalue))
+            re /= np.sqrt(self.X.shape[1])
+            self._signal_components = cp.asarray(re)
 
-        del eigenvalue, eigenvector
-        gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
+            del eigenvalue, _signal_components, re
+            gc.collect()
 
         if self.sparsity == 'auto':
             self._calculate_sparsity()
-            
-        # if self.preprocessed:
-        #     raw = self._raw
+
+
+        class CSRMatrix(ctypes.Structure):
+            _fields_ = [
+                ("indptr", ctypes.POINTER(ctypes.c_int)),
+                ("indices", ctypes.POINTER(ctypes.c_int)),
+                ("data", ctypes.POINTER(ctypes.c_float)),
+                ("nnz", ctypes.c_int),
+                ("n_rows", ctypes.c_int),
+                ("n_cols", ctypes.c_int),
+            ]
+  
+        lib = ctypes.CDLL("./random_matrix.so")
+        lib.sparse_rand_csr.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_double]
+        lib.sparse_rand_csr.restype = ctypes.POINTER(CSRMatrix)
+        lib.free_csr.argtypes = [ctypes.POINTER(CSRMatrix)]
+
+        n_rows, n_cols = self._raw.shape
+        density = 1 - self.sparsity
+
 
         pert_vecs = list()
         for _ in tqdm(range(self.n_rand_matrix), total=self.n_rand_matrix):
-            rand = scipy.sparse.rand(self.X.shape[0], self.X.shape[1], 
-                                    density=1-self.sparsity, 
-                                    format='csr')
-            rand.data[:] = 1
-            rand = rand.toarray()
-            rand += self._raw
+
+            mat_ptr = lib.sparse_rand_csr(n_rows, n_cols, density)
+            if not bool(mat_ptr):
+                raise MemoryError("Failed to allocate CSR matrix.")
+            mat = mat_ptr.contents
+
+            # Convert to scipy CSR
+            indptr = np.ctypeslib.as_array(mat.indptr, shape=(mat.n_rows + 1,))
+            indices = np.ctypeslib.as_array(mat.indices, shape=(mat.nnz,))
+            data = np.ctypeslib.as_array(mat.data, shape=(mat.nnz,))
+            rand = sp.csr_matrix((data, indices, indptr), shape=(mat.n_rows, mat.n_cols)).copy()
+
+            block_size = 10000
+            shape = rand.shape
+            rand_zarr_path = f"./{self.directory}/srt_perturbed.zarr"
+            zarr_out = zarr.open(rand_zarr_path, mode="w", shape=shape, dtype=np.float32, chunks=(block_size, shape[1]))
+
+            for i in range(0, shape[0], block_size):
+                end = min(i + block_size, shape[0])
+                block = (rand[i:end] + self._raw[i:end]).toarray()
+                zarr_out[i:end] = block
+
+            rand = da.from_zarr(f"./{self.directory}/srt_perturbed.zarr")
             rand = self._preprocess_rand(rand)
-            n = min(sclens._signal_components.shape[1] * sclens._perturbed_n_scale, sclens.X.shape[1])
+            
+            n = min(self._signal_components.shape[1] * self._perturbed_n_scale, self.X.shape[1])
 
             if self.device == 'cpu':
                 pass
             elif self.device == 'gpu':
-                perturbed = self._PCA_rand(rand, n)
-                perturbed = cp.asarray(perturbed)
+                version = self.memcheck()
+                perturbed_L, perturbed_V = self._PCA_rand(rand, n, version)
 
-            # if self.device == 'cpu':
-            #     U, S, VT = svds(rand, k=2*k)
-            #     if rand.shape[0] <= rand.shape[1]:
-            #         perturbed = np.array(U)
-            #     else:
-            #         perturbed = np.array(VT)
-            
-            # elif self.device == 'gpu':
-            #     X = torch.tensor(rand, device="cuda", dtype=torch.float32)
-            #     U, S, VT = torch.svd_lowrank(X, q=2*k)
-            #     perturbed = cp.asarray(U)
-            #     # if rand.shape[0] <= rand.shape[1]:
-            #     #     perturbed = cp.asarray(U)
-            #     # else:
-            #     #     perturbed = cp.asarray(VT)
-            # else:
-            #     print("The device can be either cpu or gpu.")
-            
-            # del U, S, VT
-            # gc.collect()
-            # cp.get_default_memory_pool().free_all_blocks()
-            # cp.get_default_pinned_memory_pool().free_all_blocks()
+            if rand.shape[0] <= rand.shape[1]:
+                perturbed = cp.asarray(perturbed_V)
+            else:
+                perturbed_L = perturbed_L[-n:]
+                perturbed_V = cp.asnumpy(perturbed_V)
+                perturbed_L = cp.asnumpy(perturbed_L)
+                re = rand @ perturbed_V @ np.diag(1/np.sqrt(perturbed_L))
+                re /= np.sqrt(rand.shape[1])
+                perturbed = cp.asarray(re)
 
+                del perturbed_L, perturbed_V, re
+                gc.collect()
+            
             pert_select = self._signal_components.T @ perturbed
             pert_select = cp.abs(pert_select)
             pert_select = cp.argmax(pert_select, axis = 1)
@@ -281,7 +371,8 @@ class scLENS2():
             gc.collect()
             cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
-
+            cp._default_memory_pool.free_all_blocks()
+            
         pert_scores = list()
         for i in range(self.n_rand_matrix):
             for j in range(i+1, self.n_rand_matrix):
@@ -290,15 +381,22 @@ class scLENS2():
                 pert_scores.append(corr.get())
 
         pert_scores = cp.array(pert_scores)
-        pvals = cp.sum(pert_scores < self.threshold, axis=0) / pert_scores.shape[0]
-        self._robust_idx = pvals < 0.01
+
+        def iqr(x):
+            q1 = cp.percentile(x, 25)
+            q3 = cp.percentile(x, 75)
+            iqr = q3 - q1
+            filtered = x[(x >= q1 -1.5*iqr) & (x <= q3 + 1.5*iqr)]
+            return cp.median(filtered)
+
+        rob_scores = cp.array([iqr(pert_scores[:,i]) for i in range(pert_scores.shape[1])])
+        robust_idx = rob_scores > self.threshold
+        self._robust_idx = robust_idx
         self.X_transform = pca_result[1][:, self._robust_idx] * cp.sqrt(pca_result[0][self._robust_idx]).reshape(1, -1)
         self.robust_scores = pert_scores
 
-        del pert_scores, pert_vecs
+        del pert_scores
         gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
 
         if self.X.shape[0] <= self.X.shape[1]:
             self.data.obsm['PCA_scLENS'] = self.X_transform
@@ -307,15 +405,56 @@ class scLENS2():
 
         return self.X_transform
     
-        
+    def memcheck(self):
+        free_mem, total_mem = cp.cuda.runtime.memGetInfo()
+        free_gb = free_mem / (1024 ** 3)
+        bytes_per_element = 4  # float32 기준
+        total_gb = 0
+
+        # 1. 원본 행렬 (pert)
+        num_elements = self._raw.shape[0] * self._raw.shape[1]
+        total_gb += (num_elements * bytes_per_element) / (1024 ** 3)
+
+        # 2. Wishart matrix (X @ X.T 또는 X.T @ X)
+        wishart_dim = min(self._raw.shape[0], self._raw.shape[1])
+        num_elements = wishart_dim ** 2
+        total_gb += (num_elements * bytes_per_element) / (1024 ** 3)
+
+        # 3. EVD 결과 (L + V)
+        num_elements = wishart_dim + wishart_dim ** 2
+        total_gb += (num_elements * bytes_per_element) / (1024 ** 3)
+
+        # 4. 워크스페이스 추정 
+        total_gb += 8
+        cp._default_memory_pool.free_all_blocks() 
+
+        # # 결과 출력
+        # print(f"Estimated memory needed: {total_gb:.2f} GiB")
+        # print(f"Free GPU memory:         {free_gb:.2f} GiB")
+
+        if total_gb < free_gb*0.9:
+            version = 'cupy'
+        else:
+            version = 'dask'
+        return version
+    
     def _calculate_sparsity(self):
-        """Automatic sparsity level calculation"""
+        bin_matrix = sp.csr_matrix(
+            (np.ones_like(self._raw.data, dtype=np.float32),
+            self._raw.indices,
+            self._raw.indptr),
+            shape=self._raw.shape)
+        
+        bin_dask = da.from_array(bin_matrix.toarray(), chunks=(10000, bin_matrix.shape[1]))
+        bin_dask.to_zarr(f"{self.directory}/bin.zarr")
+
         sparse = 0.999
         shape_row, shape_col = self._raw.shape
         n_len = shape_row * shape_col
         n_zero = n_len - self._raw.size
 
         rng = np.random.default_rng()
+
         # Calculate threshold for correlation
         n_sampling = min(self._raw.shape)
         thresh = np.mean([max(np.abs(rng.normal(0, np.sqrt(1/n_sampling), n_sampling)))
@@ -328,81 +467,111 @@ class scLENS2():
             zero_indices = np.setdiff1d(np.arange(shape_col), col.indices, assume_unique=True).astype(np.int32)
             if zero_indices.size > 0:
                 zero_indices_dict[row] = zero_indices  # 0이 있는 row만 저장
-
-        _raw_ann.X = None
-        del _raw_ann
-
-        # Construct binarized data matrix
-        bin = scipy.sparse.csr_array(self._raw)
-        bin.data[:] = 1.
-        # 16일 수정
-        # bin = cp.array(bin.toarray(), dtype=cp.float32)
-        bin = bin.toarray()
-        Vb = self._PCA_rand(self._preprocess_rand(bin, inplace=False), bin.shape[0])
-        n_vbp = Vb.shape[1]//2
+        del col, zero_indices
         gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
 
+        c_array_pointers = (ctypes.POINTER(ctypes.c_int32) * len(zero_indices_dict))()
+        for i, key in enumerate(zero_indices_dict):
+            c_array_pointers[i] = zero_indices_dict[key].ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
+
+        row_sizes = []
+        for i in range(len(zero_indices_dict)):
+            row_sizes.append(len(zero_indices_dict[i]))
+        row_sizes = np.array(row_sizes, dtype=np.int32)
+
+        bin = da.from_zarr(f'{self.directory}/bin.zarr')
+
+        bin_nor = self.normalize(bin)
+        bin_nor = bin_nor.compute()
+
+        self.device = 'gpu'
+        version = self.memcheck()
+        Lb, Vb= self._PCA_rand(bin_nor, bin.shape[0], version)
+        del bin_nor
+        gc.collect()
+        cp._default_memory_pool.free_all_blocks()
+
+        n_vbp = Vb.shape[1]//2
         n_buffer = 5
         buffer = [1] * n_buffer
+
         while sparse > self.sparsity_threshold:
             n_pert = int((1-sparse) * n_len)
-            selection = np.random.choice(n_zero,n_pert,replace=False)
-            idx = [x[selection] for x in zero_idx]
+            p = n_pert / n_zero
+            rows, cols = self._raw.shape
+            n_pert, p, rows, cols
 
-            # Construct perturbed data matrix
-            # 16일 수정
-            # pert = cp.zeros_like(bin)
-            pert = np.zeros_like(bin)
-            pert[tuple(idx)] = 1
-            pert += bin
+            # C 라이브러리 로드
+            lib = ctypes.CDLL("./perturb_omp.so")
 
-            del idx
-            gc.collect()
-            cp.get_default_memory_pool().free_all_blocks()
-            cp.get_default_pinned_memory_pool().free_all_blocks()
-            
-            
-            pert = self._preprocess_rand(pert)
-            if pert.shape[0] <= pert.shape[1]:
-                pert = pert @ pert.T
-            else:
-                pert = pert.T @ pert
-            pert /= pert.shape[1]  # numpy
+            # C 함수 프로토타입 설정
+            lib.perturb_zeros.argtypes = [
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_int)),  # zero_list
+                ctypes.POINTER(ctypes.c_int),  # row_sizes
+                ctypes.c_int,  # rows
+                ctypes.c_double,  # p
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_int)),  # output_rows
+                ctypes.POINTER(ctypes.c_int),  # output_sizes
+            ]
 
-            # 18일 수정
-            # pert가 numpy여서 cupy로 바꾼 후 eigenvalue decomposition
-            pert = cp.asarray(pert)
-            Vbp = cp.linalg.eigh(pert)[1][:, -n_vbp:]
+            zero_list_ptr = c_array_pointers
+            row_sizes_ptr = row_sizes.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+            output_rows = (ctypes.POINTER(ctypes.c_int) * rows)()
+            output_sizes = (ctypes.c_int * rows)()
+
+            lib.perturb_zeros(zero_list_ptr, row_sizes_ptr, rows, p, output_rows, output_sizes)
+
+            # 결과를 (row, col) 인덱스로 수집
+            row_idx = []
+            col_idx = []
+
+            for i in range(rows):
+                size = output_sizes[i]
+                if size > 0:
+                    for j in range(size):
+                        row_idx.append(i)
+                        col_idx.append(output_rows[i][j])
+
+            data = [1] * len(row_idx)
+
+            pert = sp.coo_matrix((data, (row_idx, col_idx)), shape=(rows, cols))
+            pert = pert.tocsr()
+
+            bin_sparse = bin_matrix
+
+            shape = pert.shape
+            block_size = 10000
+
+            # Zarr로 저장 (dense로)
+            zarr_path = f"{self.directory}/perturbed.zarr"
+            zarr_out = zarr.open(zarr_path, mode="w", shape=shape, dtype=np.float32, chunks=(block_size, shape[1]))
+
+            for i in range(0, shape[0], block_size):
+                end = min(i + block_size, shape[0])
+                block = (pert[i:end] + bin_sparse[i:end]).toarray()
+                zarr_out[i:end] = block
+
+            pert = da.from_zarr(f"{self.directory}/perturbed.zarr")
+            pert = self.normalize(pert).compute()
             
+            Lbp, Vbp = self._PCA_rand(pert, n_vbp, version)
             del pert
             gc.collect()
-            cp.get_default_memory_pool().free_all_blocks()
-            cp.get_default_pinned_memory_pool().free_all_blocks()
+            cp._default_memory_pool.free_all_blocks() 
 
             corr_arr = cp.max(cp.abs(Vb.T @ Vbp), axis=0).get()
-            del Vbp  
-            gc.collect()
-            cp.get_default_memory_pool().free_all_blocks()
-            cp.get_default_pinned_memory_pool().free_all_blocks()
-
             corr = np.sort(corr_arr)[1]
-            
             buffer.pop(0)
             buffer.append(corr)
-            
-
-            print(f'Min(corr): {corr}, sparsity: {sparse}, add_ilen: {selection.shape}')
+            print(f'Min(corr): {corr}, sparsity: {sparse}')
             if all([x < thresh for x in buffer]):
-                 self.sparsity = sparse + self.sparsity_step * (n_buffer - 1)
-                 break
-            
+                self.sparsity = sparse + self.sparsity_step * (n_buffer - 1)
+                break
             sparse -= self.sparsity_step
-        del bin, Vb, selection
+        
+        del bin 
         gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
+
         
     def _PCA(self, X, device = None, plot_mp = False):
         pca = PCA(device = self.device)
@@ -421,37 +590,22 @@ class scLENS2():
     
         return comp
     
-    # def _PCA_rand(self, X, n, use_numpy_if_oom=True, batch_size=5000):
-    #     try:
-    #         W = (X.T @ X) / X.shape[1]
-    #         _, V = cp.linalg.eigh(W)  # 기본적으로 CuPy 연산 수행
-    #     except cp.cuda.memory.OutOfMemoryError:
-    #         if use_numpy_if_oom:
-    #             print("Out of memory detected, switching to NumPy.")
-    #             X = cp.asnumpy(X)  # NumPy 변환
-    #             W = (X.T @ X) / X.shape[1]
-    #             _, V = np.linalg.eigh(W)  # NumPy 연산 사용
-    #             return cp.asarray(V)  # 다시 CuPy 배열로 변환
-    #         else:
-    #             raise  # OOM 발생 시 예외를 그대로 전달
 
-    #     return V
-
-    def _PCA_rand(self, X, n):
-        print("pca - binary matrix")
+    def _PCA_rand(self, X, n, version):
         pca = PCA(device = self.device)
-        L, V = pca._get_eigen(X)
+
+        if version == 'cupy':
+            X = cp.asarray(X)
+            Y = pca._wishart_matrix(X)
+            L, V = cp.linalg.eigh(Y)
+
+            del Y
+            cp._default_memory_pool.free_all_blocks() 
+
+        else:
+            L, V = pca._get_eigen(X)
+
         V = V[:, -n:]
-
-        # # SRT에서 gene x gene matrix로 하는 경우
-        # if X.shape[0] > X.shape[1]:
-        #     L = L[-n:]
-        #     V = cp.asnumpy(V)
-        #     L = cp.asnumpy(L)
-        #     vec = X @ V @ np.diag(np.sqrt(L))
-        #     V, _ = np.linalg.qr(vec)
-
-        #     del vec, _
         
         gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
@@ -461,40 +615,20 @@ class scLENS2():
     
 
     def plot_robust_score(self):
-        fig1, axs1 = plt.subplots(1, 1, figsize=(10, 5))
-        for i in range(self.robust_scores.shape[1]):
-            if i in np.where(self._robust_idx)[0]:
-                axs1.scatter(i*np.ones_like(self.robust_scores[:, i].get()), self.robust_scores[:, i].get(), c='g', alpha=0.1)
-            else:
-                axs1.scatter(i*np.ones_like(self.robust_scores[:, i].get()), self.robust_scores[:, i].get(), c='r', alpha=0.1)
-        axs1.axhline(y=self.threshold, color='k', linestyle='--')
-        axs1.set_ylabel('Robustness Score')
-        axs1.set_title('Signal Component Robustness')
-    
-        if isinstance(self.data, sc.AnnData):
-            self.data.uns['robust_score_plot'] = fig1
+        m_scores = self.robust_scores.mean(axis=0).get()
+        sd_scores = self.robust_scores.std(axis=0).get()
+        nPC = np.arange(1, len(m_scores)+1)
 
-            import numpy as np
+        colors = cm.get_cmap("RdBu")(1.0 - m_scores)
 
+        fig, ax = plt.subplots(figsize=(7, 5))
+        ax.set_xlabel("nPC")
+        ax.set_ylabel("Stability")
+        ax.set_title(f"{np.sum(self._robust_idx)} robust signals were detected")
 
-    # def plot_robust_score():
-    #     m_scores = sclens.robust_scores.mean(axis=0).get()  # mean stability per component
-    #     sd_scores = sclens.robust_scores.std(axis=0).get()   # std deviation per component
-    #     nPC = np.arange(1, len(m_scores)+1)
+        ax.scatter(nPC, m_scores, c=colors, s=50, edgecolor='k')
+        ax.errorbar(nPC, m_scores, yerr=sd_scores, fmt='none', color='gray', capsize=4, linewidth=1)
+        ax.axhline(y=self.threshold, color='k', linestyle='--')
 
-    #     # colormap (inverse of m_scores like Julia code: 1 - m_scores)
-    #     colors = cm.get_cmap("RdBu")(1.0 - m_scores)
-
-    #     fig, ax = plt.subplots(figsize=(10, 5))
-    #     ax.set_xlabel("nPC")
-    #     ax.set_ylabel("Stability")
-    #     ax.set_title(f"{np.sum(sclens._robust_idx)} robust signals were detected")
-
-    #     # Scatter plot with color encoding
-    #     ax.scatter(nPC, m_scores, c=colors, s=50, edgecolor='k')  # size ~ markersize=10 in Julia
-    #     ax.errorbar(nPC, m_scores, yerr=sd_scores, fmt='none', color='gray', capsize=4, linewidth=1)
-
-    #     ax.axhline(y=sclens.threshold, color='k', linestyle='--')  # threshold line
-
-
+        ax.invert_xaxis()
         

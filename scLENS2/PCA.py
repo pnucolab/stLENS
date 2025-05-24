@@ -74,10 +74,8 @@ class PCA():
         # Y = (X.T @ X)
         
         if X.shape[0] <= X.shape[1]:
-            print('cell x cell matrix')
             Y = (X @ X.T)
         else:
-            print('gene x gene matrix')
             Y = (X.T @ X)
         Y /= X.shape[1]
         return Y
@@ -106,17 +104,16 @@ class PCA():
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
 
-        print("Y_gpu :", Y_gpu.shape)
         return Y_gpu
     
     def _get_eigen(self, X):
         Y = self._wishart_matrix(X)
         if self.device=='gpu':
             Y = self.to_gpu(Y)
-            print("EVD - GPU")
             L, V = cp.linalg.eigh(Y)
+
         elif self.device=='cpu':
-            print("EVD - cpu")
+            
             L, V = np.linalg.eigh(Y)
         else:
             print("The device can be either cpu or gpu.")
@@ -128,11 +125,7 @@ class PCA():
         return L, V
 
     def _random_matrix(self, X):
-        print("random matix")
 
-        # Xr = cp.array([
-        #     cp.random.permutation(row) for row in X
-        # ])
         if isinstance(X, da.core.Array):
             X_dask = X
         else:
