@@ -32,6 +32,7 @@ class PCA():
             del Xr
             cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
+            cp._default_memory_pool.free_all_blocks() 
             gc.collect()
 
             self.explained_variance_ = (self.L**2) / self.n_cells
@@ -71,8 +72,6 @@ class PCA():
         raise ValueError('n_components must be positive')
     
     def _wishart_matrix(self, X):
-        # Y = (X.T @ X)
-        
         if X.shape[0] <= X.shape[1]:
             Y = (X @ X.T)
         else:
@@ -98,11 +97,13 @@ class PCA():
             gc.collect()
             cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
+            cp._default_memory_pool.free_all_blocks() 
 
         del Y_dask, chunk_size, Y, chunk
         gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
+        cp._default_memory_pool.free_all_blocks() 
 
         return Y_gpu
     
@@ -113,14 +114,14 @@ class PCA():
             L, V = cp.linalg.eigh(Y)
 
         elif self.device=='cpu':
-            
             L, V = np.linalg.eigh(Y)
         else:
-            print("The device can be either cpu or gpu.")
+            raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
         del Y
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
+        cp._default_memory_pool.free_all_blocks() 
         gc.collect()
         return L, V
 
@@ -142,6 +143,7 @@ class PCA():
         gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
+        cp._default_memory_pool.free_all_blocks() 
         return Xr
     
 
@@ -151,7 +153,13 @@ class PCA():
         if bins is None:
             bins = 300
 
-        x = np.linspace(0, int(cp.round(cp.max(self.L_mp) + 0.5)), 2000)
+        if self.device == 'gpu':
+            x = np.linspace(0, int(cp.round(cp.max(self.L_mp) + 0.5)), 2000)
+        elif self.device == 'cpu':
+            x = np.linspace(0, int(np.round(np.max(self.L_mp) + 0.5)), 2000)
+        else:
+            raise ValueError("The device must be either 'cpu' or 'gpu'.")
+        
         y = calc._mp_pdf(x, self.L_mp).get()
 
         if comparison and self.Lr is not None:
@@ -236,8 +244,17 @@ class PCA():
             ax.legend(handles=[data_real, MP_data], loc="upper right", frameon=True)
 
         # x축 범위 설정
-        max_Lr = cp.max(self.Lr) if self.Lr is not None else 0
-        max_L_mp = cp.max(self.L_mp) if self.L_mp is not None else 0
+        if self.device == 'cpu':
+            max_Lr = np.max(self.Lr) if self.Lr is not None else 0
+            max_L_mp = np.max(self.L_mp) if self.L_mp is not None else 0
+
+        elif self.device == 'gpu':
+            max_Lr = cp.max(self.Lr) if self.Lr is not None else 0
+            max_L_mp = cp.max(self.L_mp) if self.L_mp is not None else 0
+
+        else:
+            raise ValueError("The device must be either 'cpu' or 'gpu'.")
+
         ax.set_xlim([0, int(np.round(max(max_Lr, max_L_mp) + 1.5))])
 
         # 격자 스타일 설정
