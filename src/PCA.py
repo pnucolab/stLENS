@@ -23,12 +23,26 @@ class PCA():
     def fit(self, X=None, eigen_solver = 'wishart'):
         calc = Calc()
         self.n_cells, self.n_genes = X.shape
+        self.rmt_device = None
 
         if eigen_solver == 'wishart':
             self.L, self.V = self._get_eigen(X)
             Xr = self._random_matrix(X)
+
+            if isinstance(self.L, np.ndarray):
+                self.device = 'cpu'
+                self.rmt_device = 'cpu'
             self.Lr, self.Vr = self._get_eigen(Xr)
-            
+
+            if self.rmt_device != 'cpu' and isinstance(self.Lr, np.ndarray):
+                self.L = self.L.get()
+                self.V = self.V.get()
+                self.rmt_device = 'cpu'
+            elif self.rmt_device == 'cpu':
+                self.rmt_device = 'cpu'
+            else:
+                self.rmt_device = 'gpu'
+
             del Xr
             cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
@@ -39,11 +53,12 @@ class PCA():
             self.total_variance_ = self.explained_variance_.sum()
 
             calc.L = self.L 
-            self.L_mp = calc._mp_calculation(self.L, self.Lr)
+            calc.rmt_device = self.rmt_device
+            self.L_mp = calc._mp_calculation(self.L, self.Lr, self.rmt_device)
             calc.L_mp = self.L_mp
-            self.lambda_c = calc._tw()
+            self.lambda_c = calc._tw(self.rmt_device)
             print("lambda_c:",self.lambda_c)
-            self.peak = calc._mp_parameters(self.L_mp)['peak']
+            self.peak = calc._mp_parameters(self.L_mp. self.rmt_device)['peak']
 
         else:
             raise ValueError("Invalid eigen_solver. Use 'wishart'.")
@@ -110,8 +125,17 @@ class PCA():
     def _get_eigen(self, X):
         Y = self._wishart_matrix(X)
         if self.device=='gpu':
-            Y = self.to_gpu(Y)
-            L, V = cp.linalg.eigh(Y)
+            try:
+                Y = self.to_gpu(Y)
+                L, V = cp.linalg.eigh(Y)
+            except cp.cuda.memory.OutOfMemoryError:
+                print('[Warning] GPU memory insufficient. Falling back to CPU computation.')
+                if isinstance(Y, cp.ndarray):
+                    Y = Y.get()
+                    cp.get_default_memory_pool().free_all_blocks()
+                    cp.get_default_pinned_memory_pool().free_all_blocks()
+                    cp._default_memory_pool.free_all_blocks()
+                    L, V = np.linalg.eigh(Y)
 
         elif self.device=='cpu':
             L, V = np.linalg.eigh(Y)

@@ -205,29 +205,53 @@ class scLENS_py():
         return X
     
 
-    def preprocess_stage(self, data, plot=False):
-        if isinstance(data, pd.DataFrame):
-            obs = pd.DataFrame(data['cell']) 
-            X = sp.csr_matrix(data.iloc[:, 1:].values) 
-            var = pd.DataFrame(data.columns[1:])
-            var.columns = ['gene'] 
-            data = sc.AnnData(X, obs=obs, var=var)
+    def preprocess_stage(self, data, filter, plot=False):
 
-        if isinstance(data, sc.AnnData):
-            cell_names = data.obs_names.to_numpy()
-            gene_names = data.var_names.to_numpy()
-            data_array = data.X
+        if filter ==True:  # 줄리아 비교용
+            if isinstance(data, pd.DataFrame):
+                obs = pd.DataFrame(data['cell']) 
+                X = sp.csr_matrix(data.iloc[:, 1:].values) 
+                var = pd.DataFrame(data.columns[1:])
+                var.columns = ['gene'] 
+                data = sc.AnnData(X, obs=obs, var=var)
+
+            if isinstance(data, sc.AnnData):
+                cell_names = data.obs_names.to_numpy()
+                gene_names = data.var_names.to_numpy()
+                data_array = data.X
+
             
-        self._raw = self.filtering(data) # sparse
-        if sp.issparse(self._raw):
-            normalized_X = self.normalize(self._raw.toarray())
-        else:
-            normalized_X = self.normalize(self._raw)
-        normalized_X.to_zarr(f"{self.directory}/normalized_X.zarr")
+            self._raw = self.filtering(data) # sparse
 
-        data = data[self.fc_idx, self.fg_idx]
-        data.var_names = self.final_gene_names
-        data.obs_names = self.final_cell_names
+            if sp.issparse(self._raw):
+                normalized_X = self.normalize(self._raw.toarray())
+            else:
+                normalized_X = self.normalize(self._raw)
+            normalized_X.to_zarr(f"{self.directory}/normalized_X.zarr")
+
+            data = data[self.fc_idx, self.fg_idx]
+            data.var_names = self.final_gene_names
+            data.obs_names = self.final_cell_names
+        
+        else:
+            print('without filtering')
+            self._raw = data.X # scanpy로 filtering
+            if sp.issparse(self._raw):
+                normalized_X = self.normalize(self._raw.toarray())
+            else:
+                normalized_X = self.normalize(self._raw)
+            normalized_X.to_zarr(f"{self.directory}/normalized_X.zarr")
+
+
+        # if sp.issparse(self._raw):
+        #     normalized_X = self.normalize(self._raw.toarray())
+        # else:
+        #     normalized_X = self.normalize(self._raw)
+        # normalized_X.to_zarr(f"{self.directory}/normalized_X.zarr")
+
+        # data = data[self.fc_idx, self.fg_idx]
+        # data.var_names = self.final_gene_names
+        # data.obs_names = self.final_cell_names
     
         if plot:
             print("plotting the result of preprocessing")
@@ -276,8 +300,8 @@ class scLENS_py():
         del normalized_X
         gc.collect()
 
-    def preprocess(self, data, plot=False):
-        self._run_in_process(self.preprocess_stage, args=(data, plot))
+    def preprocess(self, data, filter=False, plot=False):
+        self._run_in_process(self.preprocess_stage, args=(data, filter, plot))
 
 
     def _preprocess_rand(self, X, inplace=True, chunk_size = 'auto'):
@@ -364,7 +388,7 @@ class scLENS_py():
         n_rows, n_cols = self._raw.shape
         density = 1 - self.sparsity
 
-        pert_vecs = list()
+        self.pert_vecs = list()
         for _ in tqdm(range(self.n_rand_matrix), total=self.n_rand_matrix):
 
             mat_ptr = lib.sparse_rand_csr(n_rows, n_cols, density)
@@ -422,7 +446,7 @@ class scLENS_py():
                 pert_select = self._signal_components.T @ perturbed
                 pert_select = np.abs(pert_select)
                 pert_select = np.argmax(pert_select, axis = 1)
-                pert_vecs.append(perturbed[:, pert_select])
+                self.pert_vecs.append(perturbed[:, pert_select])
 
                 del rand, perturbed, pert_select
                 gc.collect()
@@ -453,7 +477,7 @@ class scLENS_py():
                     pert_select = self._signal_components.T @ perturbed
                     pert_select = np.abs(pert_select)
                     pert_select = np.argmax(pert_select, axis = 1)
-                    pert_vecs.append(perturbed[:, pert_select])
+                    self.pert_vecs.append(perturbed[:, pert_select])
 
                     del rand, perturbed, pert_select
                     gc.collect()
@@ -477,10 +501,13 @@ class scLENS_py():
                         gc.collect()
                         cp._default_memory_pool.free_all_blocks()
                     
+                    if isinstance(self._signal_components, np.ndarray):
+                        self._signal_components = cp.asarray(self._signal_components)
+
                     pert_select = self._signal_components.T @ perturbed
                     pert_select = cp.abs(pert_select)
                     pert_select = cp.argmax(pert_select, axis = 1)
-                    pert_vecs.append(perturbed[:, pert_select])
+                    self.pert_vecs.append(perturbed[:, pert_select])
 
                     del rand, perturbed, pert_select
                     gc.collect()
@@ -493,13 +520,19 @@ class scLENS_py():
 
         if self.device == 'gpu':
             pert_scores = list()
-            for i in range(self.n_rand_matrix):
-                for j in range(i+1, self.n_rand_matrix):
-                    dots = pert_vecs[i].T @ pert_vecs[j]
-                    if isinstance(dots, np.ndarray):
-                        dots = cp.asarray(dots)
-                    corr = cp.max(cp.abs(dots), axis = 1)
-                    pert_scores.append(corr)
+
+            if strategy == 'cpu':
+                for i in range(self.n_rand_matrix):
+                    for j in range(i+1, self.n_rand_matrix):
+                        dots = self.pert_vecs[i].T @ self.pert_vecs[j]
+                        corr = np.max(np.abs(dots), axis = 1)
+                        pert_scores.append(corr)
+            else:  # strategy == gpu
+                for i in range(self.n_rand_matrix):
+                    for j in range(i+1, self.n_rand_matrix):
+                        dots = self.pert_vecs[i].T @ self.pert_vecs[j]
+                        corr = cp.max(cp.abs(dots), axis = 1)
+                        pert_scores.append(corr)
 
             pert_scores = cp.array(pert_scores)
 
@@ -529,7 +562,7 @@ class scLENS_py():
             pert_scores = list()
             for i in range(self.n_rand_matrix):
                 for j in range(i+1, self.n_rand_matrix):
-                    dots = pert_vecs[i].T @ pert_vecs[j]
+                    dots = self.pert_vecs[i].T @ self.pert_vecs[j]
                     corr = np.max(np.abs(dots), axis = 1)
                     pert_scores.append(corr.get())
 
@@ -621,6 +654,8 @@ class scLENS_py():
             gb = self.estimate_matrix_memory(bin.shape, step='pca_rand')
             strategy = self.calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
             _, Vb= self._PCA_rand(bin_nor, bin.shape[0], strategy)
+            if isinstance(Vb, np.ndarray):
+                strategy = 'cpu'
         else:
             raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
@@ -694,12 +729,13 @@ class scLENS_py():
             pert = da.from_zarr(f"{self.directory}/perturbed.zarr")
             pert = self.normalize(pert).compute()
             
-            if self.device == 'cpu':
+            if self.device == 'cpu' or strategy == 'cpu':
                 _, Vbp = self._PCA_rand(pert, n_vbp, self.device) 
                     
             elif self.device == 'gpu':
                 gb = self.estimate_matrix_memory(pert.shape, step='pca_rand')
-                strategy = self.calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
+                if strategy == 'dask' or strategy == 'cupy':
+                    strategy = self.calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
                 _, Vbp = self._PCA_rand(pert, n_vbp, strategy)
             else:
                 raise ValueError("The device must be either 'cpu' or 'gpu'.")
@@ -708,7 +744,28 @@ class scLENS_py():
             gc.collect()
             cp._default_memory_pool.free_all_blocks() 
 
-            corr_arr = cp.max(cp.abs(Vb.T @ Vbp), axis=0).get()
+            if self.device == 'cpu' or strategy == 'cpu':
+                if isinstance(Vb, cp.ndarray):
+                    Vb = Vb.get()
+                    cp.get_default_memory_pool().free_all_blocks()
+                    cp.get_default_pinned_memory_pool().free_all_blocks()
+                    cp._default_memory_pool.free_all_blocks()
+
+                corr_arr = np.max(np.abs(Vb.T @ Vbp), axis=0)
+            elif self.device == 'gpu':
+                try:
+                    if isinstance(Vbp, np.ndarray):
+                        Vbp = cp.asarray(Vbp)
+                        corr_arr = cp.max(cp.abs(Vb.T @ Vbp), axis=0).get()
+                        strategy = 'cpu'
+                    else:
+                        corr_arr = cp.max(cp.abs(Vb.T @ Vbp), axis=0).get()
+            
+                except cp.cuda.memory.OutOfMemoryError:
+                    Vb = np.asarray(Vb)
+                    corr_arr = np.max(np.abs(Vb.T @ Vbp), axis=0)
+
+            # corr_arr = cp.max(cp.abs(Vb.T @ Vbp), axis=0).get()
             corr = np.sort(corr_arr)[1]
             buffer.pop(0)
             buffer.append(corr)
@@ -765,7 +822,6 @@ class scLENS_py():
             del Y
             gc.collect()
 
-        
         V = V[:, -n:]
 
         
