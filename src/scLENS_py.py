@@ -236,6 +236,9 @@ class scLENS_py():
                 normalized_X = self.normalize(self._raw)
             normalized_X.to_zarr(f"{self.directory}/normalized_X.zarr")
 
+            self.fg_idx = np.where(np.isin(data.var_names, self.final_gene_names))[0]
+            self.fc_idx = np.where(np.isin(data.obs_names, self.final_cell_names))[0]
+
             data = data[self.fc_idx, self.fg_idx]
             data.var_names = self.final_gene_names
             data.obs_names = self.final_cell_names

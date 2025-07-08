@@ -58,7 +58,7 @@ class PCA():
             calc.L_mp = self.L_mp
             self.lambda_c = calc._tw(self.rmt_device)
             print("lambda_c:",self.lambda_c)
-            self.peak = calc._mp_parameters(self.L_mp. self.rmt_device)['peak']
+            self.peak = calc._mp_parameters(self.L_mp, self.rmt_device)['peak']
 
         else:
             raise ValueError("Invalid eigen_solver. Use 'wishart'.")
