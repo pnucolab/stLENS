@@ -9,7 +9,7 @@ from tqdm.auto import tqdm
 from scipy.sparse.linalg import svds
 import torch
 import random
-import zarr
+import zarr 
 import anndata
 import ctypes
 
@@ -99,9 +99,13 @@ class scLENS_py():
         if isinstance(data, sc.AnnData):
             cell_names = data.obs_names.to_numpy()
             gene_names = data.var_names.to_numpy()
-            data_array = data.X
 
-        is_sparse = sp.issparse(data_array)
+            try:
+                data_array = data.raw.X
+            except AttributeError:
+                data_array = data.X
+
+        # is_sparse = sp.issparse(data_array)
         X = data_array.astype(np.float32)
 
         n_cell_counts = (X != 0).sum(axis=0)  
@@ -207,7 +211,7 @@ class scLENS_py():
 
     def preprocess_stage(self, data, filter, plot=False):
 
-        if filter ==True:  # 줄리아 비교용
+        if filter ==True:  
             if isinstance(data, pd.DataFrame):
                 obs = pd.DataFrame(data['cell']) 
                 X = sp.csr_matrix(data.iloc[:, 1:].values) 
@@ -215,12 +219,15 @@ class scLENS_py():
                 var.columns = ['gene'] 
                 data = sc.AnnData(X, obs=obs, var=var)
 
-            if isinstance(data, sc.AnnData):
-                cell_names = data.obs_names.to_numpy()
-                gene_names = data.var_names.to_numpy()
-                data_array = data.X
+            # if isinstance(data, sc.AnnData):
+            #     cell_names = data.obs_names.to_numpy()
+            #     gene_names = data.var_names.to_numpy()
 
-            
+            #     try:
+            #         data_array = data.raw.X 
+            #     except AttributeError:
+            #         data_array = data.X
+                
             self._raw = self.filtering(data) # sparse
 
             if sp.issparse(self._raw):
