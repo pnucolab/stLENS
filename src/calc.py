@@ -109,9 +109,9 @@ class Calc():
             / float(2 * dic['s'] * np.pi * dic['gamma'] * x)
         return pdf
 
-    def _mp_pdf(self, x, L):
+    def _mp_pdf(self, x, L, rmt_device):
         '''Marchnko-Pastur PDF'''
-        dic = self._mp_parameters(L)
+        dic = self._mp_parameters(L, rmt_device)
         y = cp.empty_like(x)
         for i, xi in enumerate(x):
             y[i] = self._marchenko_pastur(xi, dic)

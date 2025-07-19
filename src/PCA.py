@@ -53,7 +53,7 @@ class PCA():
             self.total_variance_ = self.explained_variance_.sum()
 
             calc.L = self.L 
-            calc.rmt_device = self.rmt_device
+            # calc.rmt_device = self.rmt_device
             self.L_mp = calc._mp_calculation(self.L, self.Lr, self.rmt_device)
             calc.L_mp = self.L_mp
             self.lambda_c = calc._tw(self.rmt_device)
@@ -174,6 +174,7 @@ class PCA():
     def plot_mp(self, comparison=False, path=False, info=True, bins=None, title=None):
         calc = Calc()
         calc.style_mp_stat()
+
         if bins is None:
             bins = 300
 
@@ -184,10 +185,10 @@ class PCA():
         else:
             raise ValueError("The device must be either 'cpu' or 'gpu'.")
         
-        y = calc._mp_pdf(x, self.L_mp).get()
+        y = calc._mp_pdf(x, self.L_mp, self.rmt_device).get()
 
         if comparison and self.Lr is not None:
-            yr = calc._mp_pdf(x, self.Lr).get()
+            yr = calc._mp_pdf(x, self.Lr, self.rmt_device).get()
 
         # info 부분 합침
         if info:
@@ -196,7 +197,7 @@ class PCA():
 
             ax = fig.add_subplot(111)
 
-            dic = calc._mp_parameters(self.L_mp)
+            dic = calc._mp_parameters(self.L_mp, self.rmt_device)
             info1 = (r'$\bf{Data Parameters}$' + '\n{0} cells\n{1} genes'
                     .format(self.n_cells, self.n_genes))
             info2 = ('\n' + r'$\bf{MP\ distribution\ in\ data}$'
@@ -211,13 +212,15 @@ class PCA():
                     \n{1} noise eigenvalues'
                     .format(n_components, self.n_cells - n_components))
 
-            # 디버깅
-            print("L_mp type:", type(self.L_mp))
-            print("L_mp shape:", self.L_mp.shape if hasattr(self.L_mp, "shape") else "No shape attribute")
+            # print("L_mp type:", type(self.L_mp))
+            # print("L_mp shape:", self.L_mp.shape if hasattr(self.L_mp, "shape") else "No shape attribute")
 
-            # 수정
-            cdf_func = calc._call_mp_cdf(self.L_mp.get(), dic)  
-            ks = stats.kstest(self.L_mp.get(), cdf_func)  
+            if isinstance(self.L_mp, np.ndarray):
+                cdf_func = calc._call_mp_cdf(self.L_mp, dic)  
+                ks = stats.kstest(self.L_mp, cdf_func)
+            else:
+                cdf_func = calc._call_mp_cdf(self.L_mp.get(), dic)  
+                ks = stats.kstest(self.L_mp.get(), cdf_func)  
 
             info4 = '\n'+r'$\bf{Statistics}$'+'\nKS distance ={0}'\
                 .format(round(ks[0], 4))\
@@ -243,7 +246,12 @@ class PCA():
             
         
         # distplot이 deprecated -> histplot으로 변경
-        plot = sns.histplot(self.L.get(), bins=bins, stat="density",
+        if not isinstance(self.L, np.ndarray):
+            self.L = self.L.get()
+        if not isinstance(self.Lr, np.ndarray):
+            self.Lr = self.Lr.get()
+            
+        plot = sns.histplot(self.L, bins=bins, stat="density",
                         kde=False, color=sns.xkcd_rgb["cornflower blue"], alpha=0.85)
     
         # MP 분포 선 (랜덤 데이터)
@@ -258,7 +266,7 @@ class PCA():
 
         # 비교가 필요한 경우
         if comparison:
-            sns.histplot(self.Lr.get(), bins=30, kde=False,
+            sns.histplot(self.Lr, bins=30, kde=False,
                         stat="density", color=sns.xkcd_rgb["apple green"], alpha=0.75, linewidth=3)
             
             ax.plot(x, yr, sns.xkcd_rgb["sap green"], lw=1.5, ls='--')

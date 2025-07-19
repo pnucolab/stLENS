@@ -236,9 +236,6 @@ class scLENS_py():
                 normalized_X = self.normalize(self._raw)
             normalized_X.to_zarr(f"{self.directory}/normalized_X.zarr")
 
-            self.fg_idx = np.where(np.isin(data.var_names, self.final_gene_names))[0]
-            self.fc_idx = np.where(np.isin(data.obs_names, self.final_cell_names))[0]
-
             data = data[self.fc_idx, self.fg_idx]
             data.var_names = self.final_gene_names
             data.obs_names = self.final_cell_names
@@ -264,37 +261,40 @@ class scLENS_py():
         # data.obs_names = self.final_cell_names
     
         if plot:
-            print("plotting the result of preprocessing")
-            normalized_X = da.from_zarr(f"{self.directory}/normalized_X.zarr")
-            self.X = normalized_X.compute()
+            try:
+                print("plotting the result of preprocessing")
+                normalized_X = da.from_zarr(f"{self.directory}/normalized_X.zarr")
+                self.X = normalized_X.compute()
 
-            _raw = self._raw.toarray()
-            raw_mean = np.mean(_raw, axis=1)  
-            raw_std = np.std(_raw, axis=0)    
-            X_mean = np.mean(self.X, axis=1) 
-            X_std = np.std(self.X, axis=0)
+                _raw = self._raw.toarray()
+                raw_mean = np.mean(_raw, axis=1)  
+                raw_std = np.std(_raw, axis=0)    
+                X_mean = np.mean(self.X, axis=1) 
+                X_std = np.std(self.X, axis=0)
 
-            df_mean = pd.DataFrame({
-                'raw_mean': raw_mean,
-                'X_mean': X_mean
-            })
+                df_mean = pd.DataFrame({
+                    'raw_mean': raw_mean,
+                    'X_mean': X_mean
+                })
 
-            df_std = pd.DataFrame({
-                'raw_std': raw_std,
-                'X_std': X_std
-            })
-    
-            fig1, axs1 = plt.subplots(1, 2, figsize=(10, 5))
-            axs1[0].hist(raw_mean, bins=100)
-            axs1[1].hist(X_mean, bins=100)
-            fig1.suptitle('Mean of Gene Expression along Cells')
+                df_std = pd.DataFrame({
+                    'raw_std': raw_std,
+                    'X_std': X_std
+                })
+        
+                fig1, axs1 = plt.subplots(1, 2, figsize=(10, 5))
+                axs1[0].hist(raw_mean, bins=100)
+                axs1[1].hist(X_mean, bins=100)
+                fig1.suptitle('Mean of Gene Expression along Cells')
 
-            fig2, axs2 = plt.subplots(1, 2, figsize=(10, 5))
-            axs2[0].hist(raw_std, bins=100)
-            axs2[1].hist(X_std, bins=100)
-            fig2.suptitle('SD of Gene Expression for each Gene')
-            plt.show()
-            
+                fig2, axs2 = plt.subplots(1, 2, figsize=(10, 5))
+                axs2[0].hist(raw_std, bins=100)
+                axs2[1].hist(X_std, bins=100)
+                fig2.suptitle('SD of Gene Expression for each Gene')
+                plt.show()
+            except MemoryError:
+                print("[WARNING] Plotting failed: out of memory.")
+
         self.data = data
         self.data.write_zarr(f"{self.directory}/preprocessed_anndata.zarr")
         self.preprocessed = True
@@ -574,7 +574,8 @@ class scLENS_py():
                 for j in range(i+1, self.n_rand_matrix):
                     dots = self.pert_vecs[i].T @ self.pert_vecs[j]
                     corr = np.max(np.abs(dots), axis = 1)
-                    pert_scores.append(corr.get())
+                    # pert_scores.append(corr.get())
+                    pert_scores.append(corr)
 
             pert_scores = np.array(pert_scores)
 
