@@ -112,7 +112,10 @@ class Calc():
     def _mp_pdf(self, x, L, rmt_device):
         '''Marchnko-Pastur PDF'''
         dic = self._mp_parameters(L, rmt_device)
-        y = cp.empty_like(x)
+        if rmt_device == 'cpu':
+            y = np.empty_like(x)
+        else:
+            y = cp.empty_like(x)
         for i, xi in enumerate(x):
             y[i] = self._marchenko_pastur(xi, dic)
         return y

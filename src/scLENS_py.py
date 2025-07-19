@@ -42,7 +42,7 @@ class scLENS_py():
                  sparsity_step=0.001,
                  sparsity_threshold=0.9,
                  perturbed_n_scale=2,
-                 device='gpu',
+                 device=None,
                  n_rand_matrix=20,
                  threshold=np.cos(np.deg2rad(60)),
                  data=None,
@@ -359,24 +359,35 @@ class scLENS_py():
 
         # RMT
         self.X = da.from_zarr(f"{self.directory}/normalized_X.zarr")
-        pca_result = self._PCA(self.X, device = None, plot_mp = plot_mp)
+        pca_result = self._PCA(self.X, plot_mp = plot_mp)
 
         if self.X.shape[0] <= self.X.shape[1]:
             self._signal_components = pca_result[1]
             self.eigenvalue = pca_result[0]
         else:
-            eigenvalue = cp.asnumpy(pca_result[0])
-            _signal_components = cp.asnumpy(pca_result[1])
+            if self.device == 'gpu':
+                eigenvalue = cp.asnumpy(pca_result[0])
+                _signal_components = cp.asnumpy(pca_result[1])
 
-            re = self.X @ _signal_components @ np.diag(1/np.sqrt(eigenvalue))
-            re /= np.sqrt(self.X.shape[1])
-            self._signal_components = cp.asarray(re)
-            self.eigenvalue = cp.asarray(eigenvalue)
+                re = self.X @ _signal_components @ np.diag(1/np.sqrt(eigenvalue))
+                re /= np.sqrt(self.X.shape[1])
+                self._signal_components = cp.asarray(re)
+                self.eigenvalue = cp.asarray(eigenvalue)
 
-            del _signal_components, re
-            gc.collect()
-            cp._default_memory_pool.free_all_blocks()
+                del _signal_components, re
+                gc.collect()
+                cp._default_memory_pool.free_all_blocks()
+            else:
+                eigenvalue = pca_result[0]
+                _signal_components = pca_result[1]
+                re = self.X @ _signal_components @ np.diag(1/np.sqrt(eigenvalue))
+                re /= np.sqrt(self.X.shape[1])
+                self._signal_components = re
+                self.eigenvalue = eigenvalue
 
+                del _signal_components, re
+                gc.collect()
+                cp._default_memory_pool.free_all_blocks()
 
         # SRT
         class CSRMatrix(ctypes.Structure):
@@ -793,7 +804,7 @@ class scLENS_py():
         return self.sparsity
 
         
-    def _PCA(self, X, device = None, plot_mp = False):
+    def _PCA(self, X, plot_mp = False):
         pca = PCA(device = self.device)
         pca.fit(X)
         

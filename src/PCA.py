@@ -43,6 +43,7 @@ class PCA():
             else:
                 self.rmt_device = 'gpu'
 
+
             del Xr
             cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
@@ -180,15 +181,16 @@ class PCA():
 
         if self.device == 'gpu':
             x = np.linspace(0, int(cp.round(cp.max(self.L_mp) + 0.5)), 2000)
+            y = calc._mp_pdf(x, self.L_mp, self.rmt_device).get()
+            if comparison and self.Lr is not None:
+                yr = calc._mp_pdf(x, self.Lr, self.rmt_device).get()
         elif self.device == 'cpu':
             x = np.linspace(0, int(np.round(np.max(self.L_mp) + 0.5)), 2000)
+            y = calc._mp_pdf(x, self.L_mp, self.rmt_device)
+            if comparison and self.Lr is not None:
+                yr = calc._mp_pdf(x, self.Lr, self.rmt_device)
         else:
             raise ValueError("The device must be either 'cpu' or 'gpu'.")
-        
-        y = calc._mp_pdf(x, self.L_mp, self.rmt_device).get()
-
-        if comparison and self.Lr is not None:
-            yr = calc._mp_pdf(x, self.Lr, self.rmt_device).get()
 
         # info 부분 합침
         if info:
