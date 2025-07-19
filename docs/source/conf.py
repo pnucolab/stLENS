@@ -8,7 +8,7 @@
 
 project = 'stLENS'
 copyright = '2025, khyeonm'
-author = 'khyeonm'
+author = 'pnucolab'
 release = '0.1'
 
 # -- General configuration ---------------------------------------------------
