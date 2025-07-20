@@ -242,7 +242,9 @@ class scLENS_py():
         
         else:
             print('without filtering')
+            data.write_zarr(f"{self.directory}/raw_anndata.zarr")
             self._raw = data.X # scanpy로 filtering
+
             if sp.issparse(self._raw):
                 normalized_X = self.normalize(self._raw.toarray())
             else:

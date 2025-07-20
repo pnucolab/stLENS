@@ -1,0 +1,26 @@
+[project]
+name = "stlens_test"
+version = "0.1.0.dev1"
+requires-python = ">=3.10"
+
+dependencies = [
+  "ipykernel",
+  "torch",         
+  "scanpy",
+  "cupy",
+  "dask",
+  "zarr",
+  "python-igraph==0.9.9",
+  "leidenalg",
+  "spatialdata"
+]
+
+[tool.setuptools]
+packages = { find = { where = ["src"] } }
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
