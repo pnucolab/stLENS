@@ -1,0 +1,13 @@
+Metadata-Version: 2.4
+Name: stLENS
+Version: 0.1.0.dev4
+Requires-Python: >=3.10
+Requires-Dist: ipykernel
+Requires-Dist: torch
+Requires-Dist: scanpy
+Requires-Dist: cupy-cuda12x
+Requires-Dist: dask
+Requires-Dist: zarr
+Requires-Dist: python-igraph==0.9.9
+Requires-Dist: leidenalg
+Requires-Dist: spatialdata

@@ -1,13 +1,13 @@
 [project]
-name = "stlens_test"
-version = "0.1.0.dev1"
+name = "stLENS"
+version = "0.1.0.dev4"
 requires-python = ">=3.10"
 
 dependencies = [
   "ipykernel",
   "torch",         
   "scanpy",
-  "cupy",
+  "cupy-cuda12x",
   "dask",
   "zarr",
   "python-igraph==0.9.9",
@@ -15,12 +15,15 @@ dependencies = [
   "spatialdata"
 ]
 
-[tool.setuptools]
-packages = { find = { where = ["src"] } }
-
-[tool.setuptools.package-dir]
-"" = "src"
-
 [build-system]
 requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"stLENS" = ["*.so"]
