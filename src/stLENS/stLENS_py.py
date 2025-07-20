@@ -324,7 +324,7 @@ class stLENS_py():
         X = self.normalize(X)
         return X.compute()
     
-    def fit_transform(self, data=None, device=None, eigen_solver='wishart', plot_mp = False):
+    def fit_transform(self, data=None, eigen_solver='wishart', plot_mp = False):
 
         _path = f"{self.directory}/preprocessed_anndata.zarr"
         if os.path.exists(_path):
