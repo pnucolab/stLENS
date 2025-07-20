@@ -268,7 +268,10 @@ class stLENS_py():
                 normalized_X = da.from_zarr(f"{self.directory}/normalized_X.zarr")
                 self.X = normalized_X.compute()
 
-                _raw = self._raw.toarray()
+                if sp.issparse(self._raw):
+                    _raw = self._raw.toarray()
+                else:
+                    _raw = self._raw
                 raw_mean = np.mean(_raw, axis=1)  
                 raw_std = np.std(_raw, axis=0)    
                 X_mean = np.mean(self.X, axis=1) 
@@ -432,7 +435,9 @@ class stLENS_py():
 
             for i in range(0, shape[0], block_size):
                 end = min(i + block_size, shape[0])
-                block = (rand[i:end] + self._raw[i:end]).toarray()
+                block = (rand[i:end] + self._raw[i:end])
+                if sp.issparse(block):
+                    block = block.toarray()
                 zarr_out[i:end] = block
 
             rand = da.from_zarr(f"./{self.directory}/srt_perturbed.zarr")
@@ -621,6 +626,7 @@ class stLENS_py():
     
     
     def _calculate_sparsity(self):
+        self._raw = sp.csr_matrix(self._raw)
         bin_matrix = sp.csr_matrix(
             (np.ones_like(self._raw.data, dtype=np.float32),
             self._raw.indices,
