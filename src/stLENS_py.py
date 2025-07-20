@@ -37,7 +37,7 @@ from dask import delayed
 from .PCA import PCA
 from .calc import Calc
 
-class scLENS_py():
+class stLENS_py():
     def __init__(self, sparsity='auto',
                  sparsity_step=0.001,
                  sparsity_threshold=0.9,
@@ -612,15 +612,10 @@ class scLENS_py():
         gc.collect()
         cp._default_memory_pool.free_all_blocks()
 
-        self.data.obsm['X_pca_sclens'] = self.X_transform
+        self.data.obsm['X_pca_stlens'] = self.X_transform
         if isinstance(self.X_transform, cp.ndarray):
-            self.data.obsm['X_pca_sclens'] = self.data.obsm['X_pca_sclens'].get()
+            self.data.obsm['X_pca_stlens'] = self.data.obsm['X_pca_stlens'].get()
 
-        # if self.device == 'gpu':
-        #     self.data.obsm['X_pca_sclens'] = self.X_transform
-        #     self.data.obsm['X_pca_sclens'] = self.data.obsm['X_pca_sclens'].get()
-        # else:
-        #     self.data.obsm['X_pca_sclens'] = self.X_transform
 
         return self.X_transform
     

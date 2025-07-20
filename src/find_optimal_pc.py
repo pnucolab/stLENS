@@ -593,11 +593,11 @@ class find_optimal_pc():
 		else:
 			robust_idx_np = self._robust_idx
 
-		self.data.uns['sclens_optimal_pc_count'] = int(np.sum(robust_idx_np))
-		self.data.uns['sclens_robust_idx'] = robust_idx_np
-		self.data.uns['sclens_eigenvalues'] = self.eigenvalue.get() if isinstance(self.eigenvalue, cp.ndarray) else self.eigenvalue
+		self.data.uns['stlens_optimal_pc_count'] = int(np.sum(robust_idx_np))
+		self.data.uns['stlens_robust_idx'] = robust_idx_np
+		self.data.uns['stlens_eigenvalues'] = self.eigenvalue.get() if isinstance(self.eigenvalue, cp.ndarray) else self.eigenvalue
 
-		return self.data.uns['sclens_optimal_pc_count']
+		return self.data.uns['stlens_optimal_pc_count']
 	
 
 	def _calculate_sparsity(self):

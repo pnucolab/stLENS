@@ -1,1 +1,1 @@
-from . import scLENS_py
+from . import stLENS_py
