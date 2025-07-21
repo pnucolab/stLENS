@@ -333,7 +333,28 @@ class stLENS():
         X = self.normalize(X)
         return X.compute()
     
-    def fit_transform(self, data=None, eigen_solver='wishart', plot_mp = False):
+    def calc_pca(self):
+        if not hasattr(self, '_robust_idx') or not hasattr(self, '_signal_components'):
+            raise RuntimeError("You must run find_optimal_pc() before calc_pca().")
+    
+        if self.device == 'gpu':
+            self.X_transform = self._signal_components[:, self._robust_idx] * cp.sqrt(
+                self.eigenvalue[self._robust_idx]
+            ).reshape(1, -1)
+            if isinstance(self.X_transform, cp.ndarray):
+                self.X_transform = self.X_transform.get()
+        elif self.device == 'cpu':
+            self.X_transform = self._signal_components[:, self._robust_idx] * np.sqrt(
+                self.eigenvalue[self._robust_idx]
+            ).reshape(1, -1)
+        else:
+            raise ValueError("The device must be either 'cpu' or 'gpu'.")
+
+        self.data.obsm['X_pca_stlens'] = self.X_transform
+
+        return self.X_transform
+
+    def find_optimal_pc(self, data=None, eigen_solver='wishart', plot_mp = False):
 
         _path = f"{self.directory}/preprocessed_anndata.zarr"
         if os.path.exists(_path):
@@ -613,22 +634,25 @@ class stLENS():
             rob_scores = np.array([iqr(pert_scores[:,i]) for i in range(pert_scores.shape[1])])
             robust_idx = rob_scores > self.threshold
             self._robust_idx = robust_idx
-            self.X_transform = self._signal_components[:, self._robust_idx] * np.sqrt(self.eigenvalue[self._robust_idx]).reshape(1, -1)
-            self.robust_scores = pert_scores
+            			
+            _ = self._signal_components[:, self._robust_idx] * np.sqrt(self.eigenvalue[self._robust_idx]).reshape(1, -1)
+
 
         else:
             raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
-        del pert_scores
-        gc.collect()
-        cp._default_memory_pool.free_all_blocks()
+        if isinstance(self._robust_idx, cp.ndarray):
+            robust_idx_np = self._robust_idx.get()
+        else:
+            robust_idx_np = self._robust_idx
 
-        self.data.obsm['X_pca_stlens'] = self.X_transform
-        if isinstance(self.X_transform, cp.ndarray):
-            self.data.obsm['X_pca_stlens'] = self.data.obsm['X_pca_stlens'].get()
+        self.data.uns['stlens_optimal_pc_count'] = int(np.sum(robust_idx_np))
+        self.data.uns['stlens_robust_idx'] = robust_idx_np
+        self.data.uns['stlens_eigenvalues'] = (
+            self.eigenvalue.get() if isinstance(self.eigenvalue, cp.ndarray) else self.eigenvalue
+        )
 
-
-        return self.X_transform
+        return self.data.uns['stlens_optimal_pc_count']
     
     
     def _calculate_sparsity(self):
