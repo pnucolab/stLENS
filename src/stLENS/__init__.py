@@ -1,1 +1,2 @@
-from . import stLENS_py
+from . import stLENS as _stLENS
+stLENS = _stLENS.stLENS()

@@ -1,9 +1,0 @@
-ipykernel
-torch
-scanpy
-cupy-cuda12x
-dask
-zarr
-python-igraph==0.9.9
-leidenalg
-spatialdata

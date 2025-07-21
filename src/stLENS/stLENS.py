@@ -1,5 +1,11 @@
 import scanpy as sc
-import cupy as cp
+try:
+    import cupy as cp
+except ImportError:
+    raise ImportError(
+        "CuPy is required but not installed. "
+        "Please install CuPy manually: `pip install cupy-cuda11x` or `pip install cupy-cuda12x`"
+    )
 import pandas as pd
 from scipy import stats, linalg
 import scipy
@@ -37,7 +43,7 @@ from dask import delayed
 from .PCA import PCA
 from .calc import Calc
 
-class stLENS_py():
+class stLENS():
     def __init__(self, sparsity='auto',
                  sparsity_step=0.001,
                  sparsity_threshold=0.9,

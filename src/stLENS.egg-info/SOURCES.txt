@@ -7,9 +7,8 @@ src/stLENS/calc.py
 src/stLENS/find_optimal_pc.py
 src/stLENS/perturb_omp.so
 src/stLENS/random_matrix.so
-src/stLENS/stLENS_py.py
+src/stLENS/stLENS.py
 src/stLENS.egg-info/PKG-INFO
 src/stLENS.egg-info/SOURCES.txt
 src/stLENS.egg-info/dependency_links.txt
-src/stLENS.egg-info/requires.txt
 src/stLENS.egg-info/top_level.txt
