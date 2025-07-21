@@ -16,7 +16,6 @@ release = '0.1'
 
 extensions = [
     'myst_parser',
-    "myst_nb",  
     'jupyter_sphinx',
     'sphinx_design'
 ]
@@ -36,6 +35,4 @@ source_suffix = {
     '.rst': 'restructuredtext',
     '.txt': 'markdown',
     '.md': 'markdown',
-    '.ipynb': 'myst-nb'
 }
-nb_execution_mode = "off" 
