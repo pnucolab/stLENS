@@ -54,7 +54,6 @@ class PCA():
             self.total_variance_ = self.explained_variance_.sum()
 
             calc.L = self.L 
-            # calc.rmt_device = self.rmt_device
             self.L_mp = calc._mp_calculation(self.L, self.Lr, self.rmt_device)
             calc.L_mp = self.L_mp
             self.lambda_c = calc._tw(self.rmt_device)
@@ -72,7 +71,7 @@ class PCA():
         self.Ln = self.L[noise_boolean]
     
         self.n_components = len(self.Ls)
-        print(f"Number of signal components: {self.n_components}")
+        print(f"Number of signal: {self.n_components}")
 
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
@@ -192,7 +191,6 @@ class PCA():
         else:
             raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
-        # info 부분 합침
         if info:
             fig = plt.figure(dpi=100)
             fig.set_layout_engine()
@@ -214,9 +212,6 @@ class PCA():
                     \n{1} noise eigenvalues'
                     .format(n_components, self.n_cells - n_components))
 
-            # print("L_mp type:", type(self.L_mp))
-            # print("L_mp shape:", self.L_mp.shape if hasattr(self.L_mp, "shape") else "No shape attribute")
-
             if isinstance(self.L_mp, np.ndarray):
                 cdf_func = calc._call_mp_cdf(self.L_mp, dic)  
                 ks = stats.kstest(self.L_mp, cdf_func)
@@ -234,20 +229,10 @@ class PCA():
             ax.text(1.05, 1.02, infoT, transform=ax.transAxes, fontsize=10,
                 verticalalignment='top', horizontalalignment='left',
                 bbox=dict(facecolor='wheat', alpha=0.8, boxstyle='round,pad=0.5'))
-
-            # props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
-
-            # at = AnchoredText(infoT, loc=2, prop=dict(size=10),
-            #                 frameon=True,
-            #                 bbox_to_anchor=(1., 1.024),
-            #                 bbox_transform=ax.transAxes)
-            # at.patch.set_boxstyle("round,pad=0.,rounding_size=0.2")
-            # lgd = ax.add_artist(at)
         else:
             plt.figure(dip=100)
             
         
-        # distplot이 deprecated -> histplot으로 변경
         if not isinstance(self.L, np.ndarray):
             self.L = self.L.get()
         if not isinstance(self.Lr, np.ndarray):
@@ -256,17 +241,14 @@ class PCA():
         plot = sns.histplot(self.L, bins=bins, stat="density",
                         kde=False, color=sns.xkcd_rgb["cornflower blue"], alpha=0.85)
     
-        # MP 분포 선 (랜덤 데이터)
         plt.plot(x, y, color=sns.xkcd_rgb["pale red"], lw=2, label="MP for random part in data")
 
 
-        # 범례 설정
         MP_data = mlines.Line2D([], [], color=sns.xkcd_rgb["pale red"], label="MP for random part in data", linewidth=2)
         MP_rand = mlines.Line2D([], [], color=sns.xkcd_rgb["sap green"], label="MP for randomized data", linewidth=1.5, linestyle='--')
         randomized = mpatches.Patch(color=sns.xkcd_rgb["apple green"], label="Randomized data", alpha=0.75, linewidth=3, fill=False)
         data_real = mpatches.Patch(color=sns.xkcd_rgb["cornflower blue"], label="Real data", alpha=0.85)
 
-        # 비교가 필요한 경우
         if comparison:
             sns.histplot(self.Lr, bins=30, kde=False,
                         stat="density", color=sns.xkcd_rgb["apple green"], alpha=0.75, linewidth=3)
@@ -277,7 +259,6 @@ class PCA():
         else:
             ax.legend(handles=[data_real, MP_data], loc="upper right", frameon=True)
 
-        # x축 범위 설정
         if self.device == 'cpu':
             max_Lr = np.max(self.Lr) if self.Lr is not None else 0
             max_L_mp = np.max(self.L_mp) if self.L_mp is not None else 0
@@ -291,19 +272,14 @@ class PCA():
 
         ax.set_xlim([0, int(np.round(max(max_Lr, max_L_mp) + 1.5))])
 
-        # 격자 스타일 설정
         ax.grid(linestyle='--', lw=0.3)
 
-        # 제목 설정
         if title:
             ax.set_title(title)
         
-        # x축 레이블 설정
         ax.set_xlabel('First cell eigenvalues normalized distribution')
 
         if self.data is not None and isinstance(self.data, sc.AnnData):
             self.data.uns['mp_plot'] = fig
 
-        # if path:
-        #     plt.savefig(path, bbox_inches="tight")
         return fig

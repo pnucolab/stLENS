@@ -31,7 +31,6 @@ class Calc():
 
     def style_mp_stat(self):
         plt.style.use("ggplot")
-        # np.seterr(invalid='ßignore')
         np.seterr(invalid='ignore')
         sns.set_style("white")
         sns.set_context("paper")

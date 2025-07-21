@@ -52,7 +52,7 @@ class stLENS():
                  n_rand_matrix=20,
                  threshold=np.cos(np.deg2rad(60)),
                  data=None,
-                 chunk_size='auto'):  # chunk_size 추가
+                 chunk_size='auto'): 
         self.L = None
         self.V = None
         self.L_mp = None
@@ -67,7 +67,7 @@ class stLENS():
         self.n_rand_matrix = n_rand_matrix
         self.threshold = threshold
         self.data = data
-        self.chunk_size = chunk_size  # 청크 크기 설정
+        self.chunk_size = chunk_size   
         self.directory = None
 
 
@@ -111,7 +111,6 @@ class stLENS():
             except AttributeError:
                 data_array = data.X
 
-        # is_sparse = sp.issparse(data_array)
         X = data_array.astype(np.float32)
 
         n_cell_counts = (X != 0).sum(axis=0)  
@@ -153,7 +152,7 @@ class stLENS():
         else:
             cidx_6 = n_gene_counts < max_genes_per_cell
 
-        self.fc_idx = cidx_1 & cidx_2 & cidx_3 & cidx_4 & cidx_5 & cidx_6  # cell index
+        self.fc_idx = cidx_1 & cidx_2 & cidx_3 & cidx_4 & cidx_5 & cidx_6 
 
         if self.fc_idx.sum() > 0 and self.fg_idx.sum() > 0:
             Xf = X[self.fc_idx][:, self.fg_idx]
@@ -224,17 +223,8 @@ class stLENS():
                 var = pd.DataFrame(data.columns[1:])
                 var.columns = ['gene'] 
                 data = sc.AnnData(X, obs=obs, var=var)
-
-            # if isinstance(data, sc.AnnData):
-            #     cell_names = data.obs_names.to_numpy()
-            #     gene_names = data.var_names.to_numpy()
-
-            #     try:
-            #         data_array = data.raw.X 
-            #     except AttributeError:
-            #         data_array = data.X
                 
-            self._raw = self.filtering(data) # sparse
+            self._raw = self.filtering(data) 
 
             if sp.issparse(self._raw):
                 normalized_X = self.normalize(self._raw.toarray())
@@ -249,24 +239,13 @@ class stLENS():
         else:
             print('without filtering')
             data.write_zarr(f"{self.directory}/raw_anndata.zarr")
-            self._raw = data.X # scanpy로 filtering
+            self._raw = data.X 
 
             if sp.issparse(self._raw):
                 normalized_X = self.normalize(self._raw.toarray())
             else:
                 normalized_X = self.normalize(self._raw)
             normalized_X.to_zarr(f"{self.directory}/normalized_X.zarr")
-
-
-        # if sp.issparse(self._raw):
-        #     normalized_X = self.normalize(self._raw.toarray())
-        # else:
-        #     normalized_X = self.normalize(self._raw)
-        # normalized_X.to_zarr(f"{self.directory}/normalized_X.zarr")
-
-        # data = data[self.fc_idx, self.fg_idx]
-        # data.var_names = self.final_gene_names
-        # data.obs_names = self.final_cell_names
     
         if plot:
             try:
@@ -360,7 +339,6 @@ class stLENS():
         if os.path.exists(_path):
             self.data = anndata.read_zarr(f"{self.directory}/preprocessed_anndata.zarr")
             self._raw = anndata.read_zarr(f"{self.directory}/raw_anndata.zarr").X
-            # self._raw = raw_anndata.X
 
         else:
             if isinstance(data, pd.DataFrame):
@@ -373,9 +351,7 @@ class stLENS():
                 self.X = X
 
             elif isinstance(data, sc.AnnData):
-                # cell_names = data.obs_names.to_numpy()
-                # gene_names = data.var_names.to_numpy()
-                # data_array = data.X
+
                 self.data = data
                 self.X = data.X
                 self._raw = data.X
@@ -449,7 +425,6 @@ class stLENS():
                 raise MemoryError("Failed to allocate CSR matrix.")
             mat = mat_ptr.contents
 
-            # Convert to scipy CSR
             indptr = np.ctypeslib.as_array(mat.indptr, shape=(mat.n_rows + 1,))
             indices = np.ctypeslib.as_array(mat.indices, shape=(mat.nnz,))
             data = np.ctypeslib.as_array(mat.data, shape=(mat.nnz,))
@@ -619,7 +594,6 @@ class stLENS():
                 for j in range(i+1, self.n_rand_matrix):
                     dots = self.pert_vecs[i].T @ self.pert_vecs[j]
                     corr = np.max(np.abs(dots), axis = 1)
-                    # pert_scores.append(corr.get())
                     pert_scores.append(corr)
 
             pert_scores = np.array(pert_scores)
@@ -652,6 +626,8 @@ class stLENS():
             self.eigenvalue.get() if isinstance(self.eigenvalue, cp.ndarray) else self.eigenvalue
         )
 
+        print(f"number of filtered signal : {self.data.uns['stlens_optimal_pc_count']}")
+
         return self.data.uns['stlens_optimal_pc_count']
     
     
@@ -681,10 +657,10 @@ class stLENS():
 
         zero_indices_dict = {}
         for row in range(shape_row):
-            col = self._raw[row, :]  # CSR 형식 (1, shape_col)
+            col = self._raw[row, :] 
             zero_indices = np.setdiff1d(np.arange(shape_col), col.indices, assume_unique=True).astype(np.int32)
             if zero_indices.size > 0:
-                zero_indices_dict[row] = zero_indices  # 0이 있는 row만 저장
+                zero_indices_dict[row] = zero_indices 
         del col, zero_indices
         gc.collect()
 
@@ -731,17 +707,15 @@ class stLENS():
 
             module_dir = os.path.dirname(os.path.abspath(__file__))
             lib_path = os.path.join(module_dir, "perturb_omp.so")
-            # C 라이브러리 로드
             lib = ctypes.CDLL(lib_path)
 
-            # C 함수 프로토타입 설정
             lib.perturb_zeros.argtypes = [
-                ctypes.POINTER(ctypes.POINTER(ctypes.c_int)),  # zero_list
-                ctypes.POINTER(ctypes.c_int),  # row_sizes
-                ctypes.c_int,  # rows
-                ctypes.c_double,  # p
-                ctypes.POINTER(ctypes.POINTER(ctypes.c_int)),  # output_rows
-                ctypes.POINTER(ctypes.c_int),  # output_sizes
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_int)), 
+                ctypes.POINTER(ctypes.c_int),  
+                ctypes.c_int,  
+                ctypes.c_double,  
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_int)), 
+                ctypes.POINTER(ctypes.c_int),  
             ]
 
             zero_list_ptr = c_array_pointers
@@ -751,7 +725,6 @@ class stLENS():
 
             lib.perturb_zeros(zero_list_ptr, row_sizes_ptr, rows, p, output_rows, output_sizes)
 
-            # 결과를 (row, col) 인덱스로 수집
             row_idx = []
             col_idx = []
 
@@ -772,7 +745,6 @@ class stLENS():
             shape = pert.shape
             block_size = 10000
 
-            # Zarr로 저장 (dense로)
             zarr_path = f"{self.directory}/perturbed.zarr"
             zarr_out = zarr.open(zarr_path, mode="w", shape=shape, dtype=np.float32, chunks=(block_size, shape[1]))
 
@@ -820,7 +792,6 @@ class stLENS():
                     Vb = np.asarray(Vb)
                     corr_arr = np.max(np.abs(Vb.T @ Vbp), axis=0)
 
-            # corr_arr = cp.max(cp.abs(Vb.T @ Vbp), axis=0).get()
             corr = np.sort(corr_arr)[1]
             buffer.pop(0)
             buffer.append(corr)
@@ -856,7 +827,7 @@ class stLENS():
         return comp
     
 
-    def _PCA_rand(self, X, n, strategy): # strategy = cupy, dask, cpu
+    def _PCA_rand(self, X, n, strategy): 
         pca = PCA(device = self.device)
 
         if strategy == 'cupy':
@@ -917,20 +888,16 @@ class stLENS():
 
         elif step == 'pca_rand':
             gb = 0
-            # pert
             bytes_total = row * col * dtype
             gb += bytes_total / 1024**3
 
-            # Wishart matrix (X @ X.T 또는 X.T @ X)
             wishart_dim = min(row, col)
             num_elements = wishart_dim ** 2
             gb += (num_elements * dtype) / (1024 ** 3)
 
-            # EVD 결과 (L + V)
             num_elements = wishart_dim + wishart_dim ** 2
             gb += (num_elements * dtype) / (1024 ** 3)
 
-            # 워크스페이스
             gb += 8
         
         return gb

@@ -60,7 +60,7 @@ CSRMatrix* sparse_rand_csr(int n_rows, int n_cols, double density) {
 
     for (int i = 0; i < n_rows; ++i) {
         std::vector<int>& cols = row_to_cols[i];
-        std::sort(cols.begin(), cols.end());  // optional
+        std::sort(cols.begin(), cols.end());   
         for (int j : cols) {
             indices.push_back(j);
             data.push_back(1.0f);

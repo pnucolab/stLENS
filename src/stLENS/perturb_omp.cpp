@@ -11,10 +11,9 @@ void perturb_zeros(
     int **output_rows,
     int *output_sizes
 ) {
-    // OpenMP 병렬 영역 시작
     #pragma omp parallel
     {
-        std::mt19937 gen(std::random_device{}() + omp_get_thread_num());  // 각 쓰레드마다 독립된 seed
+        std::mt19937 gen(std::random_device{}() + omp_get_thread_num());  
         std::uniform_real_distribution<> dis(0.0, 1.0);
 
         #pragma omp for
