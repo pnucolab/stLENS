@@ -7,6 +7,6 @@ Here you’ll find hands-on examples that guide you through using stLENS for bot
 ```{toctree}
 :maxdepth: 1
 
-paper_tutorial_spatial
+spatial_transcriptomics_analysis
 single_cell_analysis
 ```
