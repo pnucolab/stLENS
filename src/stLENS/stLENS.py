@@ -39,6 +39,8 @@ import gc
 import time
 import dask.array as da
 from dask import delayed
+import tempfile
+import uuid
 
 from .PCA import PCA
 from .calc import Calc
@@ -52,7 +54,8 @@ class stLENS():
                  n_rand_matrix=20,
                  threshold=np.cos(np.deg2rad(60)),
                  data=None,
-                 chunk_size='auto'): 
+                 chunk_size='auto',
+                 temporary_directory=None): 
         self.L = None
         self.V = None
         self.L_mp = None
@@ -68,7 +71,8 @@ class stLENS():
         self.threshold = threshold
         self.data = data
         self.chunk_size = chunk_size   
-        self.directory = None
+        self.directory = tempfile.gettempdir() if temporary_directory is None else temporary_directory
+        self.tmp_prefix = uuid.uuid4()
 
 
     # process 1 : preprocessing
@@ -160,7 +164,13 @@ class stLENS():
             
             valid_gene_mask = np.array(Xf.sum(axis=0) != 0).flatten()
             Xf = Xf[:, valid_gene_mask]
-            self.final_gene_names = gene_names[self.fg_idx][valid_gene_mask]
+
+            fg_idx_updated = self.fg_idx.copy()
+            fg_idx_updated[self.fg_idx] = valid_gene_mask
+            self.fg_idx = fg_idx_updated
+
+            self.final_gene_names = gene_names[self.fg_idx]
+            # self.final_gene_names = gene_names[self.fg_idx][valid_gene_mask]
             self.final_cell_names = cell_names[self.fc_idx]
 
             if sp.issparse(Xf):
@@ -170,7 +180,7 @@ class stLENS():
                 self._raw = sp.csr_matrix(self._raw)
 
             raw_anndata = sc.AnnData(self._raw)
-            raw_anndata.write_zarr(f"{self.directory}/raw_anndata.zarr")
+            raw_anndata.write_zarr(f"{self.directory}/{self.tmp_prefix}-raw_anndata.zarr")
 
             print(f"After filtering >> shape: {self._raw.shape}")
 
@@ -230,7 +240,7 @@ class stLENS():
                 normalized_X = self.normalize(self._raw.toarray())
             else:
                 normalized_X = self.normalize(self._raw)
-            normalized_X.to_zarr(f"{self.directory}/normalized_X.zarr")
+            normalized_X.to_zarr(f"{self.directory}/{self.tmp_prefix}-normalized_X.zarr")
 
             data = data[self.fc_idx, self.fg_idx]
             data.var_names = self.final_gene_names
@@ -238,19 +248,19 @@ class stLENS():
         
         else:
             print('without filtering')
-            data.write_zarr(f"{self.directory}/raw_anndata.zarr")
+            data.write_zarr(f"{self.directory}/{self.tmp_prefix}-raw_anndata.zarr")
             self._raw = data.X 
 
             if sp.issparse(self._raw):
                 normalized_X = self.normalize(self._raw.toarray())
             else:
                 normalized_X = self.normalize(self._raw)
-            normalized_X.to_zarr(f"{self.directory}/normalized_X.zarr")
+            normalized_X.to_zarr(f"{self.directory}/{self.tmp_prefix}-normalized_X.zarr")
     
         if plot:
             try:
                 print("plotting the result of preprocessing")
-                normalized_X = da.from_zarr(f"{self.directory}/normalized_X.zarr")
+                normalized_X = da.from_zarr(f"{self.directory}/{self.tmp_prefix}-normalized_X.zarr")
                 self.X = normalized_X.compute()
 
                 if sp.issparse(self._raw):
@@ -286,7 +296,7 @@ class stLENS():
                 print("[WARNING] Plotting failed: out of memory.")
 
         self.data = data
-        self.data.write_zarr(f"{self.directory}/preprocessed_anndata.zarr")
+        self.data.write_zarr(f"{self.directory}/{self.tmp_prefix}-preprocessed_anndata.zarr")
         self.preprocessed = True
 
         data.X = None
@@ -335,10 +345,10 @@ class stLENS():
 
     def find_optimal_pc(self, data=None, eigen_solver='wishart', plot_mp = False):
 
-        _path = f"{self.directory}/preprocessed_anndata.zarr"
+        _path = f"{self.directory}/{self.tmp_prefix}-preprocessed_anndata.zarr"
         if os.path.exists(_path):
-            self.data = anndata.read_zarr(f"{self.directory}/preprocessed_anndata.zarr")
-            self._raw = anndata.read_zarr(f"{self.directory}/raw_anndata.zarr").X
+            self.data = anndata.read_zarr(f"{self.directory}/{self.tmp_prefix}-preprocessed_anndata.zarr")
+            self._raw = anndata.read_zarr(f"{self.directory}/{self.tmp_prefix}-raw_anndata.zarr").X
 
         else:
             if isinstance(data, pd.DataFrame):
@@ -366,7 +376,7 @@ class stLENS():
 
 
         # RMT
-        self.X = da.from_zarr(f"{self.directory}/normalized_X.zarr")
+        self.X = da.from_zarr(f"{self.directory}/{self.tmp_prefix}-normalized_X.zarr")
         pca_result = self._PCA(self.X, plot_mp = plot_mp)
 
         if self.X.shape[0] <= self.X.shape[1]:
@@ -432,7 +442,7 @@ class stLENS():
 
             block_size = 10000
             shape = rand.shape
-            rand_zarr_path = f"./{self.directory}/srt_perturbed.zarr"
+            rand_zarr_path = f"./{self.directory}/{self.tmp_prefix}-srt_perturbed.zarr"
             zarr_out = zarr.open(rand_zarr_path, mode="w", shape=shape, dtype=np.float32, chunks=(block_size, shape[1]))
 
             for i in range(0, shape[0], block_size):
@@ -442,7 +452,7 @@ class stLENS():
                     block = block.toarray()
                 zarr_out[i:end] = block
 
-            rand = da.from_zarr(f"./{self.directory}/srt_perturbed.zarr")
+            rand = da.from_zarr(f"./{self.directory}/{self.tmp_prefix}-srt_perturbed.zarr")
             rand = self._preprocess_rand(rand)
             
             n = min(self._signal_components.shape[1] * self._perturbed_n_scale, self.X.shape[1])
@@ -640,7 +650,7 @@ class stLENS():
             shape=self._raw.shape)
         
         bin_dask = da.from_array(bin_matrix.toarray(), chunks=(10000, bin_matrix.shape[1]))
-        bin_dask.to_zarr(f"{self.directory}/bin.zarr")
+        bin_dask.to_zarr(f"{self.directory}/{self.tmp_prefix}-bin.zarr")
 
         sparse = 0.999
         shape_row, shape_col = self._raw.shape
@@ -673,7 +683,7 @@ class stLENS():
             row_sizes.append(len(zero_indices_dict[i]))
         row_sizes = np.array(row_sizes, dtype=np.int32)
 
-        bin = da.from_zarr(f'{self.directory}/bin.zarr')
+        bin = da.from_zarr(f'{self.directory}/{self.tmp_prefix}-bin.zarr')
 
         bin_nor = self.normalize(bin)
         bin_nor = bin_nor.compute()
@@ -745,7 +755,7 @@ class stLENS():
             shape = pert.shape
             block_size = 10000
 
-            zarr_path = f"{self.directory}/perturbed.zarr"
+            zarr_path = f"{self.directory}/{self.tmp_prefix}-perturbed.zarr"
             zarr_out = zarr.open(zarr_path, mode="w", shape=shape, dtype=np.float32, chunks=(block_size, shape[1]))
 
             for i in range(0, shape[0], block_size):
@@ -753,7 +763,7 @@ class stLENS():
                 block = (pert[i:end] + bin_sparse[i:end]).toarray()
                 zarr_out[i:end] = block
 
-            pert = da.from_zarr(f"{self.directory}/perturbed.zarr")
+            pert = da.from_zarr(f"{self.directory}/{self.tmp_prefix}-perturbed.zarr")
             pert = self.normalize(pert).compute()
             
             if self.device == 'cpu' or strategy == 'cpu':
