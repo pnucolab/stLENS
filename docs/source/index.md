@@ -2,8 +2,13 @@
 
 Welcome to the stLENS documentation!
 
+```{include} ../README.md```
 
-## Contents
 
-- [Getting Started](getting_started.md)
-- [Installation](installation.md)
+```{toctree}
+:hidden: true
+:maxdepth: 1
+
+Installation
+Tutorials/index
+```
