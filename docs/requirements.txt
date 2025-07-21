@@ -1,5 +1,6 @@
 sphinx
 sphinx-rtd-theme
 myst-parser
+myst-nb
 jupyter-sphinx
 sphinx_design
