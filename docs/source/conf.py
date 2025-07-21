@@ -16,7 +16,7 @@ release = '0.1'
 
 extensions = [
     'myst_parser',
-    'myst_nb',
+    'jupyter_sphinx',
     'sphinx_design'
 ]
 
