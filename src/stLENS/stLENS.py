@@ -103,18 +103,13 @@ class stLENS():
             if inplace:
                 print("Warning: input data is not AnnData - inplace will not work!")
             inplace = True
-            obs = pd.DataFrame(data['cell']) 
-            X = sp.csr_matrix(data.iloc[:, 1:].values) 
+            obs = pd.DataFrame(data['cell'])
+            X = sp.csr_matrix(data.iloc[:, 1:].values)
             var = pd.DataFrame(data.columns[1:])
-            var.columns = ['gene'] 
+            var.columns = ['gene']
             data = sc.AnnData(X, obs=obs, var=var)
 
         use_raw = hasattr(data.raw, 'X')
-
-        if inplace:
-            data_filtered = data
-        else:
-            data_filtered = data.copy()
 
         cell_names = data.obs_names.to_numpy()
         gene_names = data.var_names.to_numpy()
@@ -126,16 +121,16 @@ class stLENS():
 
         X = data_array.astype(np.float32)
 
-        n_cell_counts = (X != 0).sum(axis=0)  
+        n_cell_counts = (X != 0).sum(axis=0)
         n_cell_sums = X.sum(axis=0)
 
         bidx_1 = np.array(n_cell_sums > min_tp_g).flatten()
         bidx_2 = np.array(n_cell_sums < max_tp_g).flatten()
         bidx_3 = np.array(n_cell_counts >= min_cells_per_gene).flatten()
 
-        fg_idx = bidx_1 & bidx_2 & bidx_3  
+        fg_idx = bidx_1 & bidx_2 & bidx_3
 
-        n_gene_counts = (X != 0).sum(axis=1) 
+        n_gene_counts = (X != 0).sum(axis=1)
         n_gene_sums = X.sum(axis=1)
 
         cidx_1 = np.array(n_gene_sums > min_tp_c).flatten()
@@ -165,14 +160,10 @@ class stLENS():
         else:
             cidx_6 = n_gene_counts < max_genes_per_cell
 
-        fc_idx = cidx_1 & cidx_2 & cidx_3 & cidx_4 & cidx_5 & cidx_6 
+        fc_idx = cidx_1 & cidx_2 & cidx_3 & cidx_4 & cidx_5 & cidx_6
 
         if fc_idx.sum() > 0 and fg_idx.sum() > 0:
             data_filtered = data[fc_idx][:, fg_idx]
-
-            # xsum = data_filtered.raw.X.sum(axis=0) if use_raw else data_filtered.X.sum(axis=0)
-            # valid_gene_mask = np.array(xsum != 0).flatten()
-            # data_filtered = data_filtered[:, valid_gene_mask]
 
             if use_raw and data.raw is not None:
                 raw_var_names = data.raw.var_names
@@ -183,31 +174,33 @@ class stLENS():
                 xsum = raw_X.sum(axis=0)
                 valid_gene_mask = np.array(xsum != 0).flatten()
 
-                # apply mask to both raw and filtered data
                 keep_genes_final = keep_genes[valid_gene_mask]
                 data_filtered = data_filtered[:, keep_genes_final]
 
                 if inplace:
+                    final_gene_mask = keep_mask.copy()
+                    final_gene_mask[keep_mask] = valid_gene_mask
+                    
                     data._inplace_subset_obs(fc_idx)
-                    data._inplace_subset_var(keep_mask)
-                    data._inplace_subset_var(keep_genes_final)
+                    data._inplace_subset_var(final_gene_mask)
 
             else:
                 xsum = data_filtered.X.sum(axis=0)
                 valid_gene_mask = np.array(xsum != 0).flatten()
                 data_filtered = data_filtered[:, valid_gene_mask]
-                if inplace == True:
-                    data = data_filtered
 
                 if inplace:
-                    data._inplace_subset_obs(fc_idx)
-                    data._inplace_subset_var(valid_gene_mask)
+                    final_gene_mask = fg_idx.copy()
+                    final_gene_mask[fg_idx] = valid_gene_mask
 
-            print(f"After filtering >> shape: {data.shape}")
-            
+                    data._inplace_subset_obs(fc_idx)
+                    data._inplace_subset_var(final_gene_mask)
+
             if inplace and is_anndata:
+                print(f"After filtering >> shape: {data.shape}")
                 return None
             else:
+                print(f"After filtering >> shape: {data_filtered.shape}")
                 return data_filtered
         else:
             print("There is no high quality cells and genes")
