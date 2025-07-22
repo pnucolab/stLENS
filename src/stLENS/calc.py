@@ -1,22 +1,8 @@
-import scanpy as sc
 import cupy as cp
-import pandas as pd
 import numpy as np
-from scipy import stats, linalg
-import scipy
-
 import matplotlib.pyplot as plt
-from matplotlib import rcParams
-import matplotlib.lines as mlines
-import matplotlib.gridspec as gridspec
-from matplotlib.offsetbox import AnchoredText
-import matplotlib.patches as mpatches
-import matplotlib.lines as mlines
-
 import seaborn as sns
 
-import psutil 
-import os
 
 class Calc():
     def __init__(self,device = None, data = None, L=None, L_mp=None):

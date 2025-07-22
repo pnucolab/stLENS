@@ -1,18 +1,16 @@
 from .calc import Calc
 
 import dask.array as da
-import pandas as pd
 import scanpy as sc
-import torch
 import numpy as np
 import cupy as cp
-from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 import seaborn as sns
 from scipy import stats
 import matplotlib.patches as mpatches
 import matplotlib.lines as mlines
 import gc
+
 
 class PCA():
     def __init__(self, device = None, data = None): 

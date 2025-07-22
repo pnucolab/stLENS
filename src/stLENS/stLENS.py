@@ -7,45 +7,28 @@ except ImportError:
         "Please install CuPy manually: `pip install cupy-cuda11x` or `pip install cupy-cuda12x`"
     )
 import pandas as pd
-from scipy import stats, linalg
-import scipy
 import scipy.sparse as sp
 import numpy as np
 from tqdm.auto import tqdm
-from scipy.sparse.linalg import svds
-import torch
-import random
 import zarr 
 import anndata
 import ctypes
 
 import matplotlib.pyplot as plt
-from matplotlib import rcParams
-import matplotlib.lines as mlines
-import matplotlib.gridspec as gridspec
-from matplotlib.offsetbox import AnchoredText
-import matplotlib.patches as mpatches
-import matplotlib.lines as mlines
 import matplotlib.cm as cm
 
-import seaborn as sns
-
 import multiprocessing as mp
-from multiprocessing import Process, Queue
-import sys
-import psutil
+from multiprocessing import Queue
 import shutil
 import os
 import gc
 import glob
-import time
 import dask.array as da
-from dask import delayed
 import tempfile
 import uuid
 
 from .PCA import PCA
-from .calc import Calc
+
 
 def _get_tempdir(p):
     return tempfile.gettempdir() if p is None else p    
