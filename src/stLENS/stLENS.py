@@ -319,6 +319,8 @@ class stLENS():
 
         X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir, ))
         X_filtered = data.raw.X if hasattr(data.raw, 'X') else data.X
+        if isinstance(X_filtered, anndata._core.views.ArrayView):
+            X_filtered = sp.csr_matrix(X_filtered)
 
         # calculate sparsity
         if self.sparsity == 'auto':
