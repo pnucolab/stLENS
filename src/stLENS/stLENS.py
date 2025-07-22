@@ -34,8 +34,10 @@ import multiprocessing as mp
 from multiprocessing import Process, Queue
 import sys
 import psutil
+import shutil
 import os
 import gc
+import glob
 import time
 import dask.array as da
 from dask import delayed
@@ -45,37 +47,25 @@ import uuid
 from .PCA import PCA
 from .calc import Calc
 
+def _get_tempdir(p):
+    return tempfile.gettempdir() if p is None else p    
+
 class stLENS():
     def __init__(self, sparsity='auto',
                  sparsity_step=0.001,
                  sparsity_threshold=0.9,
                  perturbed_n_scale=2,
-                 device=None,
                  n_rand_matrix=20,
                  threshold=np.cos(np.deg2rad(60)),
-                 data=None,
-                 chunk_size='auto',
-                 temporary_directory=None): 
-        self.L = None
-        self.V = None
-        self.L_mp = None
-        self.explained_variance_ = []
-        self.total_variance_ = []
+                 ): 
         self.sparsity = sparsity
         self.sparsity_threshold = sparsity_threshold
         self.sparsity_step = sparsity_step
-        self.preprocessed = False
         self._perturbed_n_scale = perturbed_n_scale
-        self.device = device
         self.n_rand_matrix = n_rand_matrix
         self.threshold = threshold
-        self.data = data
-        self.chunk_size = chunk_size   
-        self.directory = tempfile.gettempdir() if temporary_directory is None else temporary_directory
-        self.tmp_prefix = uuid.uuid4()
 
-
-    # process 1 : preprocessing
+    # process 1 : preprocessing(inplace=True)
     def _run_in_process(self, target, args=()):
 
         p = mp.Process(target=target, args=args)
@@ -84,6 +74,7 @@ class stLENS():
         if p.exitcode != 0:
             raise RuntimeError(f"{target.__name__} failed with exit code {p.exitcode}")
         
+    # process 1 : preprocessing
     # process 2 : calculate sparsity
     def _run_in_process_value(self, target, args=()):
         queue = Queue()
@@ -99,21 +90,39 @@ class stLENS():
     
 
     # preprocessing - filtering
-    def filtering(self,
-        data,
+    def filter_cells_and_genes(self,
+        data, # anndata
         min_tp_c=0, min_tp_g=0, max_tp_c=np.inf, max_tp_g=np.inf,
         min_genes_per_cell=200, max_genes_per_cell=0,
-        min_cells_per_gene=15, mito_percent=5., ribo_percent=0.
+        min_cells_per_gene=15, mito_percent=5., ribo_percent=0.,
+        inplace=True, use_raw=True
     ):
+        is_anndata = True
+        if isinstance(data, pd.DataFrame):
+            is_anndata = False
+            if inplace:
+                print("Warning: input data is not AnnData - inplace will not work!")
+            inplace = True
+            obs = pd.DataFrame(data['cell']) 
+            X = sp.csr_matrix(data.iloc[:, 1:].values) 
+            var = pd.DataFrame(data.columns[1:])
+            var.columns = ['gene'] 
+            data = sc.AnnData(X, obs=obs, var=var)
 
-        if isinstance(data, sc.AnnData):
-            cell_names = data.obs_names.to_numpy()
-            gene_names = data.var_names.to_numpy()
+        use_raw = hasattr(data.raw, 'X')
 
-            try:
-                data_array = data.raw.X
-            except AttributeError:
-                data_array = data.X
+        if inplace:
+            data_filtered = data
+        else:
+            data_filtered = data.copy()
+
+        cell_names = data.obs_names.to_numpy()
+        gene_names = data.var_names.to_numpy()
+
+        if use_raw:
+            data_array = data.raw.X
+        else:
+            data_array = data.X
 
         X = data_array.astype(np.float32)
 
@@ -124,7 +133,7 @@ class stLENS():
         bidx_2 = np.array(n_cell_sums < max_tp_g).flatten()
         bidx_3 = np.array(n_cell_counts >= min_cells_per_gene).flatten()
 
-        self.fg_idx = bidx_1 & bidx_2 & bidx_3  
+        fg_idx = bidx_1 & bidx_2 & bidx_3  
 
         n_gene_counts = (X != 0).sum(axis=1) 
         n_gene_sums = X.sum(axis=1)
@@ -156,45 +165,58 @@ class stLENS():
         else:
             cidx_6 = n_gene_counts < max_genes_per_cell
 
-        self.fc_idx = cidx_1 & cidx_2 & cidx_3 & cidx_4 & cidx_5 & cidx_6 
+        fc_idx = cidx_1 & cidx_2 & cidx_3 & cidx_4 & cidx_5 & cidx_6 
 
-        if self.fc_idx.sum() > 0 and self.fg_idx.sum() > 0:
-            Xf = X[self.fc_idx][:, self.fg_idx]
+        if fc_idx.sum() > 0 and fg_idx.sum() > 0:
+            data_filtered = data[fc_idx][:, fg_idx]
 
-            
-            valid_gene_mask = np.array(Xf.sum(axis=0) != 0).flatten()
-            Xf = Xf[:, valid_gene_mask]
+            # xsum = data_filtered.raw.X.sum(axis=0) if use_raw else data_filtered.X.sum(axis=0)
+            # valid_gene_mask = np.array(xsum != 0).flatten()
+            # data_filtered = data_filtered[:, valid_gene_mask]
 
-            fg_idx_updated = self.fg_idx.copy()
-            fg_idx_updated[self.fg_idx] = valid_gene_mask
-            self.fg_idx = fg_idx_updated
+            if use_raw and data.raw is not None:
+                raw_var_names = data.raw.var_names
+                keep_genes = data_filtered.var_names
+                keep_mask = raw_var_names.isin(keep_genes)
 
-            self.final_gene_names = gene_names[self.fg_idx]
-            # self.final_gene_names = gene_names[self.fg_idx][valid_gene_mask]
-            self.final_cell_names = cell_names[self.fc_idx]
+                raw_X = data.raw.X[:, keep_mask]
+                xsum = raw_X.sum(axis=0)
+                valid_gene_mask = np.array(xsum != 0).flatten()
 
-            if sp.issparse(Xf):
-                self._raw = Xf
+                # apply mask to both raw and filtered data
+                keep_genes_final = keep_genes[valid_gene_mask]
+                data_filtered = data_filtered[:, keep_genes_final]
+
+                if inplace:
+                    data._inplace_subset_obs(fc_idx)
+                    data._inplace_subset_var(keep_mask)
+                    data._inplace_subset_var(keep_genes_final)
+
             else:
-                self._raw = pd.DataFrame(Xf, index=self.final_cell_names, columns=self.final_gene_names)
-                self._raw = sp.csr_matrix(self._raw)
+                xsum = data_filtered.X.sum(axis=0)
+                valid_gene_mask = np.array(xsum != 0).flatten()
+                data_filtered = data_filtered[:, valid_gene_mask]
 
-            raw_anndata = sc.AnnData(self._raw)
-            raw_anndata.write_zarr(f"{self.directory}/{self.tmp_prefix}-raw_anndata.zarr")
+                if inplace:
+                    data._inplace_subset_obs(fc_idx)
+                    data._inplace_subset_var(valid_gene_mask)
 
-            print(f"After filtering >> shape: {self._raw.shape}")
-
-            raw_anndata.X = None
-            del raw_anndata
-
-            return self._raw
+            print(f"After filtering >> shape: {data.shape}")
+            
+            if inplace and is_anndata:
+                return None
+            else:
+                return data_filtered
         else:
             print("There is no high quality cells and genes")
-            return None
+            if inplace and is_anndata:
+                return None
+            else:
+                return data
 
 
     # preprocessing - normalizing
-    def normalize(self, _raw):
+    def _normalize(self, _raw):
             
         chunk_size = (10000, _raw.shape[1])
         if isinstance(_raw, da.core.Array):
@@ -223,172 +245,96 @@ class stLENS():
 
         return X
     
-
-    def preprocess_stage(self, data, filter, plot=False):
-
-        if filter ==True:  
-            if isinstance(data, pd.DataFrame):
-                obs = pd.DataFrame(data['cell']) 
-                X = sp.csr_matrix(data.iloc[:, 1:].values) 
-                var = pd.DataFrame(data.columns[1:])
-                var.columns = ['gene'] 
-                data = sc.AnnData(X, obs=obs, var=var)
-                
-            self._raw = self.filtering(data) 
-
-            if sp.issparse(self._raw):
-                normalized_X = self.normalize(self._raw.toarray())
-            else:
-                normalized_X = self.normalize(self._raw)
-            normalized_X.to_zarr(f"{self.directory}/{self.tmp_prefix}-normalized_X.zarr")
-
-            data = data[self.fc_idx, self.fg_idx]
-            data.var_names = self.final_gene_names
-            data.obs_names = self.final_cell_names
-        
+    def normalize_process(self, data, tmp_dir):
+        use_raw = hasattr(data.raw, 'X')
+        raw_X = data.raw.X if use_raw else data.X
+        if sp.issparse(raw_X):
+            normalized_X = self._normalize(raw_X.toarray())
         else:
-            print('without filtering')
-            data.write_zarr(f"{self.directory}/{self.tmp_prefix}-raw_anndata.zarr")
-            self._raw = data.X 
+            normalized_X = self._normalize(raw_X)
 
-            if sp.issparse(self._raw):
-                normalized_X = self.normalize(self._raw.toarray())
-            else:
-                normalized_X = self.normalize(self._raw)
-            normalized_X.to_zarr(f"{self.directory}/{self.tmp_prefix}-normalized_X.zarr")
-    
-        if plot:
-            try:
-                print("plotting the result of preprocessing")
-                normalized_X = da.from_zarr(f"{self.directory}/{self.tmp_prefix}-normalized_X.zarr")
-                self.X = normalized_X.compute()
-
-                if sp.issparse(self._raw):
-                    _raw = self._raw.toarray()
-                else:
-                    _raw = self._raw
-                raw_mean = np.mean(_raw, axis=1)  
-                raw_std = np.std(_raw, axis=0)    
-                X_mean = np.mean(self.X, axis=1) 
-                X_std = np.std(self.X, axis=0)
-
-                df_mean = pd.DataFrame({
-                    'raw_mean': raw_mean,
-                    'X_mean': X_mean
-                })
-
-                df_std = pd.DataFrame({
-                    'raw_std': raw_std,
-                    'X_std': X_std
-                })
-        
-                fig1, axs1 = plt.subplots(1, 2, figsize=(10, 5))
-                axs1[0].hist(raw_mean, bins=100)
-                axs1[1].hist(X_mean, bins=100)
-                fig1.suptitle('Mean of Gene Expression along Cells')
-
-                fig2, axs2 = plt.subplots(1, 2, figsize=(10, 5))
-                axs2[0].hist(raw_std, bins=100)
-                axs2[1].hist(X_std, bins=100)
-                fig2.suptitle('SD of Gene Expression for each Gene')
-                plt.show()
-            except MemoryError:
-                print("[WARNING] Plotting failed: out of memory.")
-
-        self.data = data
-        self.data.write_zarr(f"{self.directory}/{self.tmp_prefix}-preprocessed_anndata.zarr")
-        self.preprocessed = True
-
-        data.X = None
-        data.raw = None
-        data.obsm.clear()
-        data.varm.clear()
-        data.layers.clear()
-        data.uns.clear()
-
-        del data
-        del normalized_X
-        gc.collect()
-
-    def preprocess(self, data, filter=False, plot=False):
-        self._run_in_process(self.preprocess_stage, args=(data, filter, plot))
-
+        tmp_prefix = uuid.uuid4()
+        normalized_X.to_zarr(f"{tmp_dir}/{tmp_prefix}-normalized_X.zarr")
+        return da.from_zarr(f"{tmp_dir}/{tmp_prefix}-normalized_X.zarr")
 
     def _preprocess_rand(self, X, inplace=True, chunk_size = 'auto'):
         if not inplace:
             X = X.copy()
         if sp.issparse(X): 
             X = X.toarray() 
-        X = self.normalize(X)
+        X = self._normalize(X)
         return X.compute()
     
-    def calc_pca(self):
-        if not hasattr(self, '_robust_idx') or not hasattr(self, '_signal_components'):
+    def pca(self, adata, inplace=True, device='gpu'):
+        if not inplace:
+            adata = adata.copy()
+        ri = adata.uns['stlens']['robust_idx']
+        if not hasattr(self, '_signal_components'):
             raise RuntimeError("You must run find_optimal_pc() before calc_pca().")
     
-        if self.device == 'gpu':
-            self.X_transform = self._signal_components[:, self._robust_idx] * cp.sqrt(
-                self.eigenvalue[self._robust_idx]
+        if device == 'gpu':
+            X_transform = self._signal_components[:, ri] * cp.sqrt(
+                self.eigenvalue[ri]
             ).reshape(1, -1)
-            if isinstance(self.X_transform, cp.ndarray):
-                self.X_transform = self.X_transform.get()
-        elif self.device == 'cpu':
-            self.X_transform = self._signal_components[:, self._robust_idx] * np.sqrt(
-                self.eigenvalue[self._robust_idx]
+            if isinstance(X_transform, cp.ndarray):
+                X_transform = X_transform.get()
+        elif device == 'cpu':
+            X_transform = self._signal_components[:, ri] * np.sqrt(
+                self.eigenvalue[ri]
             ).reshape(1, -1)
         else:
             raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
-        self.data.obsm['X_pca_stlens'] = self.X_transform
+        adata.obsm['X_pca_stlens'] = X_transform
 
-        return self.X_transform
+        if not inplace:
+            return adata
 
-    def find_optimal_pc(self, data=None, eigen_solver='wishart', plot_mp = False):
+    def find_optimal_pc(self, data, inplace=True, plot_mp = False, tmp_directory=None, device='gpu'):
+        if not device in ['cpu', 'gpu']:
+            raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
-        _path = f"{self.directory}/{self.tmp_prefix}-preprocessed_anndata.zarr"
-        if os.path.exists(_path):
-            self.data = anndata.read_zarr(f"{self.directory}/{self.tmp_prefix}-preprocessed_anndata.zarr")
-            self._raw = anndata.read_zarr(f"{self.directory}/{self.tmp_prefix}-raw_anndata.zarr").X
-
+        tmp_dir = _get_tempdir(tmp_directory)
+        tmp_prefix = uuid.uuid4()
+        is_anndata = True
+        if isinstance(data, pd.DataFrame):
+            is_anndata = False
+            if inplace:
+                print("Warning: input data is not AnnData - inplace will not work!")
+            inplace = True
+            obs = pd.DataFrame(data['cell'])
+            X = sp.csr_matrix(data.iloc[:, 1:].values) 
+            var = pd.DataFrame(data.columns[1:])
+            var.columns = ['gene'] 
+            adata = sc.AnnData(X, obs=obs, var=var)
+        elif isinstance(data, sc.AnnData):
+            adata = data
         else:
-            if isinstance(data, pd.DataFrame):
-                obs = pd.DataFrame(data['cell']) 
-                X = sp.csr_matrix(data.iloc[:, 1:].values) 
-                var = pd.DataFrame(data.columns[1:])
-                var.columns = ['gene'] 
-                self.data = sc.AnnData(X, obs=obs, var=var)
-                self._raw = X
-                self.X = X
+            raise ValueError("Data must be a pandas DataFrame or Anndata")
 
-            elif isinstance(data, sc.AnnData):
+        if not inplace:
+            adata = adata.copy()
 
-                self.data = data
-                self.X = data.X
-                self._raw = data.X
-                
-            else:
-                raise ValueError("Data must be a pandas DataFrame or Anndata")
-        
+        X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir, ))
+        X_filtered = data.raw.X if hasattr(data.raw, 'X') else data.X
 
         # calculate sparsity
         if self.sparsity == 'auto':
-            self.sparsity = self._run_in_process_value(self._calculate_sparsity)
-
+            self.sparsity = self._run_in_process_value(self._calculate_sparsity, args=(X_filtered, tmp_dir, device))
 
         # RMT
-        self.X = da.from_zarr(f"{self.directory}/{self.tmp_prefix}-normalized_X.zarr")
-        pca_result = self._PCA(self.X, plot_mp = plot_mp)
+        pca_result = self._PCA(X_normalized, plot_mp = plot_mp, device=device)
 
-        if self.X.shape[0] <= self.X.shape[1]:
+        if X_normalized.shape[0] <= X_normalized.shape[1]:
             self._signal_components = pca_result[1]
             self.eigenvalue = pca_result[0]
         else:
-            if self.device == 'gpu':
+            if device == 'gpu':
                 eigenvalue = cp.asnumpy(pca_result[0])
                 _signal_components = cp.asnumpy(pca_result[1])
 
-                re = self.X @ _signal_components @ np.diag(1/np.sqrt(eigenvalue))
-                re /= np.sqrt(self.X.shape[1])
+                re = X_normalized @ _signal_components @ np.diag(1/np.sqrt(eigenvalue))
+                re /= np.sqrt(X_normalized.shape[1])
                 self._signal_components = cp.asarray(re)
                 self.eigenvalue = cp.asarray(eigenvalue)
 
@@ -398,8 +344,8 @@ class stLENS():
             else:
                 eigenvalue = pca_result[0]
                 _signal_components = pca_result[1]
-                re = self.X @ _signal_components @ np.diag(1/np.sqrt(eigenvalue))
-                re /= np.sqrt(self.X.shape[1])
+                re = X_normalized @ _signal_components @ np.diag(1/np.sqrt(eigenvalue))
+                re /= np.sqrt(X_normalized.shape[1])
                 self._signal_components = re
                 self.eigenvalue = eigenvalue
 
@@ -424,7 +370,7 @@ class stLENS():
         lib.sparse_rand_csr.restype = ctypes.POINTER(CSRMatrix)
         lib.free_csr.argtypes = [ctypes.POINTER(CSRMatrix)]
 
-        n_rows, n_cols = self._raw.shape
+        n_rows, n_cols = X_filtered.shape
         density = 1 - self.sparsity
 
         self.pert_vecs = list()
@@ -437,32 +383,32 @@ class stLENS():
 
             indptr = np.ctypeslib.as_array(mat.indptr, shape=(mat.n_rows + 1,))
             indices = np.ctypeslib.as_array(mat.indices, shape=(mat.nnz,))
-            data = np.ctypeslib.as_array(mat.data, shape=(mat.nnz,))
-            rand = sp.csr_matrix((data, indices, indptr), shape=(mat.n_rows, mat.n_cols)).copy()
+            mat_data = np.ctypeslib.as_array(mat.data, shape=(mat.nnz,))
+            rand = sp.csr_matrix((mat_data, indices, indptr), shape=(mat.n_rows, mat.n_cols)).copy()
 
             block_size = 10000
             shape = rand.shape
-            rand_zarr_path = f"./{self.directory}/{self.tmp_prefix}-srt_perturbed.zarr"
+            rand_zarr_path = f"./{tmp_dir}/{tmp_prefix}-srt_perturbed.zarr"
             zarr_out = zarr.open(rand_zarr_path, mode="w", shape=shape, dtype=np.float32, chunks=(block_size, shape[1]))
 
             for i in range(0, shape[0], block_size):
                 end = min(i + block_size, shape[0])
-                block = (rand[i:end] + self._raw[i:end])
+                block = (rand[i:end] + X_filtered[i:end])
                 if sp.issparse(block):
                     block = block.toarray()
                 zarr_out[i:end] = block
 
-            rand = da.from_zarr(f"./{self.directory}/{self.tmp_prefix}-srt_perturbed.zarr")
+            rand = da.from_zarr(f"./{tmp_dir}/{tmp_prefix}-srt_perturbed.zarr")
             rand = self._preprocess_rand(rand)
             
-            n = min(self._signal_components.shape[1] * self._perturbed_n_scale, self.X.shape[1])
+            n = min(self._signal_components.shape[1] * self._perturbed_n_scale, X_normalized.shape[1])
 
-            if self.device == 'cpu': 
-                perturbed_L, perturbed_V = self._PCA_rand(rand, n, self.device)
-            elif self.device == 'gpu':
+            if device == 'cpu': 
+                perturbed_L, perturbed_V = self._PCA_rand(rand, n, strategy='cpu', device=device)
+            elif device == 'gpu':
                 gb = self.estimate_matrix_memory(rand.shape, step='pca_rand')
                 strategy = self.calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
-                perturbed_L, perturbed_V = self._PCA_rand(rand, n, strategy)
+                perturbed_L, perturbed_V = self._PCA_rand(rand, n, strategy, device=device)
 
                 gb = self.estimate_matrix_memory(self._signal_components.shape, step='srt') 
                 strategy = self.calculate_gpu_memory(gb*20, step = 'srt') # gpu or cpu
@@ -471,7 +417,7 @@ class stLENS():
                 raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
 
-            if self.device == 'cpu':
+            if device == 'cpu':
                 if rand.shape[0] <= rand.shape[1]:
                     perturbed = perturbed_V
                 else:
@@ -492,7 +438,7 @@ class stLENS():
                 gc.collect()
 
 
-            elif self.device == 'gpu':
+            elif device == 'gpu':
                 if strategy == 'cpu':
                     
                     if rand.shape[0] <= rand.shape[1]:
@@ -555,10 +501,7 @@ class stLENS():
                     cp.get_default_pinned_memory_pool().free_all_blocks()
                     cp._default_memory_pool.free_all_blocks()
 
-                else:
-                    raise ValueError("The device must be either 'cpu' or 'gpu'.")
-
-        if self.device == 'gpu':
+        if device == 'gpu':
             pert_scores = list()
 
             if strategy == 'cpu':
@@ -585,20 +528,7 @@ class stLENS():
 
             rob_scores = cp.array([iqr(pert_scores[:,i]) for i in range(pert_scores.shape[1])])
             robust_idx = rob_scores > self.threshold
-            self._robust_idx = robust_idx
-
-            if strategy == 'cpu':
-                self._robust_idx = self._robust_idx.get()
-                self.eigenvalue = self.eigenvalue.get()
-                self.X_transform = self._signal_components[:, self._robust_idx] * np.sqrt(self.eigenvalue[self._robust_idx]).reshape(1, -1)
-            else:
-                if isinstance(self._signal_components, np.ndarray):
-                    self._signal_components = cp.asarray(self._signal_components)
-                self.X_transform = self._signal_components[:, self._robust_idx] * cp.sqrt(self.eigenvalue[self._robust_idx]).reshape(1, -1)
-            self.robust_scores = pert_scores 
-
-
-        elif self.device == 'cpu':
+        elif device == 'cpu':
             pert_scores = list()
             for i in range(self.n_rand_matrix):
                 for j in range(i+1, self.n_rand_matrix):
@@ -617,57 +547,51 @@ class stLENS():
 
             rob_scores = np.array([iqr(pert_scores[:,i]) for i in range(pert_scores.shape[1])])
             robust_idx = rob_scores > self.threshold
-            self._robust_idx = robust_idx
-            			
-            _ = self._signal_components[:, self._robust_idx] * np.sqrt(self.eigenvalue[self._robust_idx]).reshape(1, -1)
 
-
+        if isinstance(robust_idx, cp.ndarray):
+            robust_idx_np = robust_idx.get()
         else:
-            raise ValueError("The device must be either 'cpu' or 'gpu'.")
+            robust_idx_np = robust_idx
+        data.uns['stlens'] = {
+            'optimal_pc_count': int(np.sum(robust_idx_np)),
+            'robust_idx': robust_idx,
+            'robust_scores': pert_scores,
+        }
+        print(f"number of filtered signals: {data.uns['stlens']['optimal_pc_count']}")
 
-        if isinstance(self._robust_idx, cp.ndarray):
-            robust_idx_np = self._robust_idx.get()
-        else:
-            robust_idx_np = self._robust_idx
-
-        self.data.uns['stlens_optimal_pc_count'] = int(np.sum(robust_idx_np))
-        self.data.uns['stlens_robust_idx'] = robust_idx_np
-        self.data.uns['stlens_eigenvalues'] = (
-            self.eigenvalue.get() if isinstance(self.eigenvalue, cp.ndarray) else self.eigenvalue
-        )
-
-        print(f"number of filtered signal : {self.data.uns['stlens_optimal_pc_count']}")
-
-        return self.data.uns['stlens_optimal_pc_count']
+        return data.uns['stlens']['optimal_pc_count']
     
     
-    def _calculate_sparsity(self):
-        self._raw = sp.csr_matrix(self._raw)
+    def _calculate_sparsity(self, X_filtered, tmp_dir, device):
+        tmp_prefix = uuid.uuid4()
+        X_filtered = sp.csr_matrix(X_filtered)
+
         bin_matrix = sp.csr_matrix(
-            (np.ones_like(self._raw.data, dtype=np.float32),
-            self._raw.indices,
-            self._raw.indptr),
-            shape=self._raw.shape)
+            (np.ones_like(X_filtered.data, dtype=np.float32),
+            X_filtered.indices,
+            X_filtered.indptr),
+            shape=X_filtered.shape)
         
+        # for SRT stage, save it
         bin_dask = da.from_array(bin_matrix.toarray(), chunks=(10000, bin_matrix.shape[1]))
-        bin_dask.to_zarr(f"{self.directory}/{self.tmp_prefix}-bin.zarr")
+        bin_dask.to_zarr(f"{tmp_dir}/{tmp_prefix}-bin.zarr")
 
         sparse = 0.999
-        shape_row, shape_col = self._raw.shape
+        shape_row, shape_col = X_filtered.shape
         n_len = shape_row * shape_col
-        n_zero = n_len - self._raw.size
+        n_zero = n_len - X_filtered.size
 
         rng = np.random.default_rng()
 
         # Calculate threshold for correlation
-        n_sampling = min(self._raw.shape)
+        n_sampling = min(X_filtered.shape)
         thresh = np.mean([max(np.abs(rng.normal(0, np.sqrt(1/n_sampling), n_sampling)))
                             for _ in range(5000)]).item()
         print(f'sparsity_th: {thresh}')
 
         zero_indices_dict = {}
         for row in range(shape_row):
-            col = self._raw[row, :] 
+            col = X_filtered[row, :] 
             zero_indices = np.setdiff1d(np.arange(shape_col), col.indices, assume_unique=True).astype(np.int32)
             if zero_indices.size > 0:
                 zero_indices_dict[row] = zero_indices 
@@ -683,18 +607,18 @@ class stLENS():
             row_sizes.append(len(zero_indices_dict[i]))
         row_sizes = np.array(row_sizes, dtype=np.int32)
 
-        bin = da.from_zarr(f'{self.directory}/{self.tmp_prefix}-bin.zarr')
+        bin = da.from_zarr(f'{tmp_dir}/{tmp_prefix}-bin.zarr')
 
-        bin_nor = self.normalize(bin)
+        bin_nor = self._normalize(bin)
         bin_nor = bin_nor.compute()
 
-        if self.device == 'cpu':
-            _, Vb= self._PCA_rand(bin_nor, bin.shape[0], self.device) 
+        if device == 'cpu':
+            _, Vb= self._PCA_rand(bin_nor, bin.shape[0], strategy='cpu', device=device) 
                 
-        elif self.device == 'gpu':
+        elif device == 'gpu':
             gb = self.estimate_matrix_memory(bin.shape, step='pca_rand')
             strategy = self.calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
-            _, Vb= self._PCA_rand(bin_nor, bin.shape[0], strategy)
+            _, Vb= self._PCA_rand(bin_nor, bin.shape[0], strategy, device=device)
             if isinstance(Vb, np.ndarray):
                 strategy = 'cpu'
         else:
@@ -712,7 +636,7 @@ class stLENS():
         while sparse > self.sparsity_threshold:
             n_pert = int((1-sparse) * n_len)
             p = n_pert / n_zero
-            rows, cols = self._raw.shape
+            rows, cols = X_filtered.shape
             n_pert, p, rows, cols
 
             module_dir = os.path.dirname(os.path.abspath(__file__))
@@ -755,7 +679,7 @@ class stLENS():
             shape = pert.shape
             block_size = 10000
 
-            zarr_path = f"{self.directory}/{self.tmp_prefix}-perturbed.zarr"
+            zarr_path = f"{tmp_dir}/{tmp_prefix}-perturbed.zarr"
             zarr_out = zarr.open(zarr_path, mode="w", shape=shape, dtype=np.float32, chunks=(block_size, shape[1]))
 
             for i in range(0, shape[0], block_size):
@@ -763,17 +687,17 @@ class stLENS():
                 block = (pert[i:end] + bin_sparse[i:end]).toarray()
                 zarr_out[i:end] = block
 
-            pert = da.from_zarr(f"{self.directory}/{self.tmp_prefix}-perturbed.zarr")
-            pert = self.normalize(pert).compute()
+            pert = da.from_zarr(f"{tmp_dir}/{tmp_prefix}-perturbed.zarr")
+            pert = self._normalize(pert).compute()
             
-            if self.device == 'cpu' or strategy == 'cpu':
-                _, Vbp = self._PCA_rand(pert, n_vbp, self.device) 
+            if device == 'cpu' or strategy == 'cpu':
+                _, Vbp = self._PCA_rand(pert, n_vbp, strategy ='cpu', device=device) 
                     
-            elif self.device == 'gpu':
+            elif device == 'gpu':
                 gb = self.estimate_matrix_memory(pert.shape, step='pca_rand')
                 if strategy == 'dask' or strategy == 'cupy':
                     strategy = self.calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
-                _, Vbp = self._PCA_rand(pert, n_vbp, strategy)
+                _, Vbp = self._PCA_rand(pert, n_vbp, strategy, device=device)
             else:
                 raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
@@ -781,7 +705,7 @@ class stLENS():
             gc.collect()
             cp._default_memory_pool.free_all_blocks() 
 
-            if self.device == 'cpu' or strategy == 'cpu':
+            if device == 'cpu' or strategy == 'cpu':
                 if isinstance(Vb, cp.ndarray):
                     Vb = Vb.get()
                     cp.get_default_memory_pool().free_all_blocks()
@@ -789,7 +713,7 @@ class stLENS():
                     cp._default_memory_pool.free_all_blocks()
 
                 corr_arr = np.max(np.abs(Vb.T @ Vbp), axis=0)
-            elif self.device == 'gpu':
+            elif device == 'gpu':
                 try:
                     if isinstance(Vbp, np.ndarray):
                         Vbp = cp.asarray(Vbp)
@@ -818,8 +742,8 @@ class stLENS():
         return self.sparsity
 
         
-    def _PCA(self, X, plot_mp = False):
-        pca = PCA(device = self.device)
+    def _PCA(self, X, device, plot_mp = False):
+        pca = PCA(device = device)
         pca.fit(X)
         
         if plot_mp:
@@ -837,8 +761,8 @@ class stLENS():
         return comp
     
 
-    def _PCA_rand(self, X, n, strategy): 
-        pca = PCA(device = self.device)
+    def _PCA_rand(self, X, n, strategy, device): 
+        pca = PCA(device = device)
 
         if strategy == 'cupy':
             X = cp.asarray(X)
@@ -869,9 +793,11 @@ class stLENS():
         return L, V
     
 
-    def plot_robust_score(self):
-        m_scores = self.robust_scores.mean(axis=0).get()
-        sd_scores = self.robust_scores.std(axis=0).get()
+    def plot_robust_score(self, adata):
+        rs = adata.uns['stlens']['robust_scores']
+        ri = adata.uns['stlens']['robust_idx']
+        m_scores = rs.mean(axis=0).get()
+        sd_scores = rs.std(axis=0).get()
         nPC = np.arange(1, len(m_scores)+1)
 
         colors = cm.get_cmap("RdBu")(1.0 - m_scores)
@@ -879,7 +805,7 @@ class stLENS():
         fig, ax = plt.subplots(figsize=(7, 5))
         ax.set_xlabel("nPC")
         ax.set_ylabel("Stability")
-        ax.set_title(f"{np.sum(self._robust_idx)} robust signals were detected")
+        ax.set_title(f"{np.sum(ri)} robust signals were detected")
 
         ax.scatter(nPC, m_scores, c=colors, s=50, edgecolor='k')
         ax.errorbar(nPC, m_scores, yerr=sd_scores, fmt='none', color='gray', capsize=4, linewidth=1)
@@ -932,6 +858,28 @@ class stLENS():
             pass
 
         return strategy
+    
+
+    def clean_tempfiles(tmp_dir=None):
+        tmp_dir = tempfile.gettempdir() if tmp_dir is None else tmp_dir
+
+        patterns = [
+            "*-perturbed.zarr",
+            "*-normalized_X.zarr",
+            "*-bin.zarr",
+            "*-srt_perturbed.zarr"
+        ]
+
+        for pattern in patterns:
+            full_pattern = os.path.join(tmp_dir, pattern)
+            for path in glob.glob(full_pattern):
+                if os.path.isdir(path):
+                    try:
+                        shutil.rmtree(path)
+                        print(f"Deleted: {path}")
+                    except Exception as e:
+                        print(f"Failed to delete {path}: {e}")
+
     
 
     
