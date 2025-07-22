@@ -1,1 +1,2 @@
-from . import stLENS
+from . import stLENS as _
+stLENS = _.stLENS
