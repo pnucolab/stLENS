@@ -49,12 +49,3 @@ py.install_sources(
   ],
   subdir: 'stLENS'
 )
-
-# Install C++ source files as well (for package data)
-py.install_sources(
-  [
-    src_dir / 'random_matrix.cpp',
-    src_dir / 'perturb_omp.cpp'
-  ],
-  subdir: 'stLENS'
-)
