@@ -25,7 +25,7 @@ jobs:
 
     - name: Install OpenMP (macOS)
       if: runner.os == 'macOS'
-      run: brew install clang-omp
+      run: brew install libomp
 
     - name: Build wheels
       uses: pypa/cibuildwheel@v2.16.5
@@ -35,6 +35,8 @@ jobs:
         CIBW_ARCHS_LINUX: auto aarch64
         CIBW_ARCHS_MACOS: x86_64 arm64
         CIBW_ARCHS_WINDOWS: AMD64
+        # Pass OpenMP flags to macOS builds
+        CIBW_ENVIRONMENT_MACOS: LDFLAGS="-L/opt/homebrew/opt/libomp/lib" CPPFLAGS="-I/opt/homebrew/opt/libomp/include"
 
     - uses: actions/upload-artifact@v4
       with:
