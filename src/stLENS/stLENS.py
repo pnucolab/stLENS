@@ -33,6 +33,72 @@ from .PCA import PCA
 def _get_tempdir(p):
     return tempfile.gettempdir() if p is None else p    
 
+
+def _find_compiled_library(library_name):
+    """
+    Find the compiled shared library, checking multiple possible locations.
+    
+    Args:
+        library_name (str): Name of the library (e.g., 'random_matrix', 'perturb_omp')
+    
+    Returns:
+        str: Path to the found library
+        
+    Raises:
+        FileNotFoundError: If the library cannot be found
+    """
+    import platform
+    
+    # Get the current module directory
+    module_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    # Determine the shared library extension based on platform
+    if platform.system() == "Windows":
+        lib_ext = ".dll"
+    elif platform.system() == "Darwin":
+        lib_ext = ".dylib"
+    else:  # Linux and other Unix-like systems
+        lib_ext = ".so"
+    
+    # List of possible locations to search for the library
+    search_paths = [
+        # Direct in module directory (original location)
+        os.path.join(module_dir, f"{library_name}{lib_ext}"),
+        # Meson build output locations
+        os.path.join(module_dir, "..", "..", "build", "src", "stLENS", f"{library_name}{lib_ext}"),
+        os.path.join(module_dir, "..", "..", "builddir", "src", "stLENS", f"{library_name}{lib_ext}"),
+        # Installation locations
+        os.path.join(module_dir, f"lib{library_name}{lib_ext}"),
+        # Check if installed via pip/conda in site-packages
+        os.path.join(os.path.dirname(module_dir), "stLENS", f"{library_name}{lib_ext}"),
+        os.path.join(os.path.dirname(module_dir), "stLENS", f"lib{library_name}{lib_ext}"),
+    ]
+    
+    # Also check in the same directory with different naming conventions
+    search_paths.extend([
+        os.path.join(module_dir, f"lib{library_name}{lib_ext}"),
+        os.path.join(module_dir, f"{library_name}.cpython-*{lib_ext}"),
+    ])
+    
+    # Search for the library
+    for lib_path in search_paths:
+        # Handle glob pattern for cpython naming
+        if "*" in lib_path:
+            import glob
+            matches = glob.glob(lib_path)
+            if matches:
+                lib_path = matches[0]  # Take the first match
+        
+        if os.path.exists(lib_path):
+            return lib_path
+    
+    # If not found, raise an informative error
+    raise FileNotFoundError(
+        f"Could not find compiled library '{library_name}'. "
+        f"Searched in: {search_paths}. "
+        f"Please ensure the C++ extensions were compiled properly during installation."
+    )    
+
 class stLENS():
     def __init__(self, sparsity='auto',
                  sparsity_step=0.001,
@@ -343,8 +409,9 @@ class stLENS():
                 ("n_rows", ctypes.c_int),
                 ("n_cols", ctypes.c_int),
             ]
-        module_dir = os.path.dirname(os.path.abspath(__file__))
-        lib_path = os.path.join(module_dir, "random_matrix.so")
+        
+        # Find and load the random_matrix library
+        lib_path = _find_compiled_library("random_matrix")
         lib = ctypes.CDLL(lib_path)
         lib.sparse_rand_csr.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_double]
         lib.sparse_rand_csr.restype = ctypes.POINTER(CSRMatrix)
@@ -619,8 +686,8 @@ class stLENS():
             rows, cols = X_filtered.shape
             n_pert, p, rows, cols
 
-            module_dir = os.path.dirname(os.path.abspath(__file__))
-            lib_path = os.path.join(module_dir, "perturb_omp.so")
+            # Find and load the perturb_omp library
+            lib_path = _find_compiled_library("perturb_omp")
             lib = ctypes.CDLL(lib_path)
 
             lib.perturb_zeros.argtypes = [
