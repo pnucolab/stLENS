@@ -4,7 +4,7 @@ project('stLENS', 'cpp',
                      'cpp_std=c++11'])
 
 # Find OpenMP for perturb_omp.cpp
-openmp = dependency('openmp', required : false)
+openmp = dependency('openmp', required : true)
 
 # Get Python installation
 py = import('python').find_installation(pure: false)

@@ -25,7 +25,7 @@ jobs:
 
     - name: Install OpenMP (macOS)
       if: runner.os == 'macOS'
-      run: brew install libomp
+      run: brew install clang-omp
 
     - name: Build wheels
       uses: pypa/cibuildwheel@v2.16.5
