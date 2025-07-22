@@ -1,1 +1,2 @@
-include src/stLENS/*.so
+include src/stLENS/*.cpp
+include setup.py
