@@ -1,7 +1,7 @@
 [project]
 name = "stLENS"
-version = "0.1.0.dev12"
-requires-python = "<3.12"
+version = "0.1.0.dev10"
+requires-python = ">=3.9,<3.12"
 dependencies = [
     "scanpy<=1.11.3",
     "pandas==2.3.1",
@@ -18,3 +18,25 @@ dependencies = [
 [build-system]
 requires = ["meson-python"]
 build-backend = "mesonpy"
+
+[tool.cibuildwheel]
+# Build wheels for Python 3.9, 3.10, and 3.11
+build = ["cp39-*", "cp310-*", "cp311-*"]
+skip = ["*-win32", "*-manylinux_i686", "*-musllinux_i686"]
+
+# Linux settings
+[tool.cibuildwheel.linux]
+archs = ["x86_64"]
+
+# macOS settings
+[tool.cibuildwheel.macos]
+archs = ["x86_64", "arm64"]
+
+# Windows settings  
+[tool.cibuildwheel.windows]
+archs = ["AMD64"]
+
+# Install build dependencies in the build environment
+before-build = [
+    "pip install meson-python meson ninja",
+]

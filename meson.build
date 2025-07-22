@@ -1,5 +1,5 @@
 project('stLENS', 'cpp',
-  version : '0.1.0.dev11',
+  version : '0.1.0.dev10',
   default_options : ['warning_level=3',
                      'cpp_std=c++11'])
 
