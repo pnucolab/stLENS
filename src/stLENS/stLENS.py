@@ -196,6 +196,8 @@ class stLENS():
                 xsum = data_filtered.X.sum(axis=0)
                 valid_gene_mask = np.array(xsum != 0).flatten()
                 data_filtered = data_filtered[:, valid_gene_mask]
+                if inplace == True:
+                    data = data_filtered
 
                 if inplace:
                     data._inplace_subset_obs(fc_idx)
