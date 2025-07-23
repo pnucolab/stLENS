@@ -342,7 +342,7 @@ class stLENS():
             X = sp.csr_matrix(data.iloc[:, 1:].values) 
             var = pd.DataFrame(data.columns[1:])
             var.columns = ['gene'] 
-            adata = sc.AnnData(X, obs=obs, var=var)
+            data = sc.AnnData(X, obs=obs, var=var)
         elif isinstance(data, sc.AnnData):
             adata = data
         else:
