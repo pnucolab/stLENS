@@ -4,3 +4,7 @@ __pycache__/
 *.pyo
 *.pyd
 *.so
+wheelhouse/
+dist/
+build/
+*.whl
