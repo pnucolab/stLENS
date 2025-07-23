@@ -397,8 +397,7 @@ class stLENS():
 
                 del _signal_components, re
                 gc.collect()
-                cp._default_memory_pool.free_all_blocks()
-
+                
         # SRT
         class CSRMatrix(ctypes.Structure):
             _fields_ = [
@@ -672,9 +671,7 @@ class stLENS():
             raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
         del bin_nor
-        gc.collect()
-        cp._default_memory_pool.free_all_blocks()
-        
+        gc.collect()        
 
         n_vbp = Vb.shape[1]//2
         n_buffer = 5
@@ -750,7 +747,6 @@ class stLENS():
 
             del pert
             gc.collect()
-            cp._default_memory_pool.free_all_blocks() 
 
             if device == 'cpu' or strategy == 'cpu':
                 if isinstance(Vb, cp.ndarray):
@@ -784,7 +780,6 @@ class stLENS():
         
         del bin 
         gc.collect()
-        cp._default_memory_pool.free_all_blocks()
 
         return self.sparsity
 
@@ -801,9 +796,6 @@ class stLENS():
 
         del pca
         gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
-        cp._default_memory_pool.free_all_blocks()
     
         return comp
     
@@ -817,6 +809,8 @@ class stLENS():
             L, V = cp.linalg.eigh(Y)
 
             del Y
+            cp._default_memory_pool.free_all_blocks() 
+            cp.get_default_pinned_memory_pool().free_all_blocks()
             cp._default_memory_pool.free_all_blocks() 
             
         elif strategy == 'dask':
@@ -833,9 +827,6 @@ class stLENS():
 
         
         gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
-        cp._default_memory_pool.free_all_blocks() 
 
         return L, V
     
