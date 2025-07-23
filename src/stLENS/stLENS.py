@@ -17,8 +17,8 @@ import ctypes
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-import multiprocessing as mp
-from multiprocessing import Queue
+import multiprocess as mp
+from multiprocess import Queue
 import shutil
 import os
 import gc
@@ -113,15 +113,7 @@ class stLENS():
         self._perturbed_n_scale = perturbed_n_scale
         self.n_rand_matrix = n_rand_matrix
         self.threshold = threshold
-
-    # process 1 : preprocessing(inplace=True)
-    def _run_in_process(self, target, args=()):
-
-        p = mp.Process(target=target, args=args)
-        p.start()
-        p.join()
-        if p.exitcode != 0:
-            raise RuntimeError(f"{target.__name__} failed with exit code {p.exitcode}")
+        mp.set_start_method('spawn')
         
     # process 1 : preprocessing
     # process 2 : calculate sparsity
