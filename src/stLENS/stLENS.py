@@ -204,8 +204,6 @@ class stLENS():
         fc_idx = cidx_1 & cidx_2 & cidx_3 & cidx_4 & cidx_5 & cidx_6
 
         if fc_idx.sum() > 0 and fg_idx.sum() > 0:
-            data._inplace_subset_obs(fc_idx)
-            data._inplace_subset_var(fg_idx)
             data_filtered = data.copy()
 
             if use_raw and data.raw is not None:
@@ -228,16 +226,21 @@ class stLENS():
                     data._inplace_subset_var(final_gene_mask)
 
             else:
-                xsum = data_filtered.X.sum(axis=0)
-                valid_gene_mask = np.array(xsum != 0).flatten()
-                data_filtered._inplace_subset_var(valid_gene_mask)
-                
                 if inplace:
-                    final_gene_mask = valid_gene_mask.copy()
-                    final_gene_mask[valid_gene_mask] = valid_gene_mask
-
                     data._inplace_subset_obs(fc_idx)
-                    data._inplace_subset_var(final_gene_mask)
+                    data._inplace_subset_var(fg_idx)
+
+                    xsum = data.X.sum(axis=0)
+                    valid_gene_mask = np.array(xsum != 0).flatten()
+                    data._inplace_subset_var(valid_gene_mask)
+
+                else:
+                    data_filtered._inplace_subset_obs(fc_idx)
+                    data_filtered._inplace_subset_var(fg_idx)
+
+                    xsum = data_filtered.X.sum(axis=0)
+                    valid_gene_mask = np.array(xsum != 0).flatten()
+                    data_filtered._inplace_subset_var(valid_gene_mask)
 
             if inplace and is_anndata:
                 print(f"After filtering >> shape: {data.shape}")
