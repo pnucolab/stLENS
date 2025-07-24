@@ -845,8 +845,12 @@ class stLENS():
     def plot_robust_score(self, adata):
         rs = adata.uns['stlens']['robust_scores']
         ri = adata.uns['stlens']['robust_idx']
-        m_scores = rs.mean(axis=0).get()
-        sd_scores = rs.std(axis=0).get()
+        if isinstance(ri, np.ndarray):
+            m_scores = rs.mean(axis=0)
+            sd_scores = rs.std(axis=0)
+        else:
+            m_scores = rs.mean(axis=0).get()
+            sd_scores = rs.std(axis=0).get()
         nPC = np.arange(1, len(m_scores)+1)
 
         colors = cm.get_cmap("RdBu")(1.0 - m_scores)
