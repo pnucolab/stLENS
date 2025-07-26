@@ -330,31 +330,25 @@ class stLENS():
             var = pd.DataFrame(data.columns[1:])
             var.columns = ['gene'] 
             data = sc.AnnData(X, obs=obs, var=var)
-            adata = data
         elif isinstance(data, sc.AnnData):
             adata = data
         else:
             raise ValueError("Data must be a pandas DataFrame or Anndata")
 
         if not inplace:
-            # Create a proper deep copy to avoid modifying the original
-            adata = sc.AnnData(
-                X=data.X.copy() if hasattr(data.X, 'copy') else data.X,
-                obs=data.obs.copy(),
-                var=data.var.copy(),
-                uns=data.uns.copy() if hasattr(data.uns, 'copy') else dict(data.uns)
-            )
-            if hasattr(data, 'raw') and data.raw is not None:
-                adata.raw = data.raw
+            adata = adata.copy()
 
         X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir, ))
-        X_filtered = adata.raw.X if hasattr(adata.raw, 'X') else adata.X
+        X_filtered = data.raw.X if hasattr(data.raw, 'X') else data.X
         if isinstance(X_filtered, anndata._core.views.ArrayView):
             X_filtered = sp.csr_matrix(X_filtered)
 
         # calculate sparsity
         if self.sparsity == 'auto':
             self.sparsity = self._run_in_process_value(self._calculate_sparsity, args=(X_filtered, tmp_dir, device))
+            print(f"Sparsity calculation completed: {self.sparsity}")
+        else:
+            print(f"Using predefined sparsity: {self.sparsity}")
 
         # RMT
         pca_result = self._PCA(X_normalized, plot_mp = plot_mp, device=device)
@@ -586,14 +580,14 @@ class stLENS():
             robust_idx_np = robust_idx.get()
         else:
             robust_idx_np = robust_idx
-        adata.uns['stlens'] = {
+        data.uns['stlens'] = {
             'optimal_pc_count': int(np.sum(robust_idx_np)),
             'robust_idx': robust_idx,
             'robust_scores': pert_scores,
         }
-        print(f"number of filtered signals: {adata.uns['stlens']['optimal_pc_count']}")
+        print(f"number of filtered signals: {data.uns['stlens']['optimal_pc_count']}")
 
-        return adata.uns['stlens']['optimal_pc_count']
+        return data.uns['stlens']['optimal_pc_count']
     
     
     def _calculate_sparsity(self, X_filtered, tmp_dir, device):
@@ -664,6 +658,8 @@ class stLENS():
         n_vbp = Vb.shape[1]//2
         n_buffer = 5
         buffer = [1] * n_buffer
+
+        print(f"Initial sparse: {sparse}, threshold: {self.sparsity_threshold}")
 
         while sparse > self.sparsity_threshold:
             n_pert = int((1-sparse) * n_len)
