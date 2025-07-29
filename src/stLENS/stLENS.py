@@ -328,7 +328,7 @@ class stLENS():
     def pca(self, adata, inplace=True, device='gpu'):
         """
         Perform PCA on the given AnnData object.
-        
+
         Parameters
         ----------
         adata : anndata.AnnData
@@ -416,7 +416,7 @@ class stLENS():
             adata = adata.copy()
 
 
-        X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir, inplace))
+        X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir))
         if not inplace:
             adata.X = sp.csr_matrix(X_normalized.compute())
 
