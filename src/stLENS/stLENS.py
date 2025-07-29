@@ -278,8 +278,7 @@ class stLENS():
 
         tmp_prefix = uuid.uuid4()
         normalized_X.to_zarr(f"{tmp_dir}/{tmp_prefix}-normalized_X.zarr")
-        if inplace:
-            data.X = sp.csr_matrix(normalized_X.compute())
+    
         return da.from_zarr(f"{tmp_dir}/{tmp_prefix}-normalized_X.zarr")
 
     def _preprocess_rand(self, X, inplace=True, chunk_size = 'auto'):
@@ -341,7 +340,9 @@ class stLENS():
             adata = adata.copy()
 
         X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir, inplace))
-        if not inplace:
+        if inplace:
+            data.X = sp.csr_matrix(X_normalized.compute())
+        else:
             adata.X = sp.csr_matrix(X_normalized.compute())
 
         X_filtered = data.raw.X if hasattr(data.raw, 'X') else data.X
