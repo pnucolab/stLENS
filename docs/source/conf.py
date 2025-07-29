@@ -6,6 +6,9 @@
 # -- Project information -----------------------------------------------------
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#project-information
 
+import os, sys
+sys.path.insert(0, os.path.abspath('../../src'))
+
 project = 'stLENS'
 copyright = '2025, khyeonm'
 author = 'pnucolab'
@@ -17,7 +20,10 @@ release = '0.1'
 extensions = [
     'myst_parser',
     'jupyter_sphinx',
-    'sphinx_design'
+    'sphinx_design',
+    'sphinx.ext.autodoc',    
+    'sphinx.ext.napoleon',   
+    'sphinx.ext.viewcode'
 ]
 
 templates_path = ['_templates']
@@ -34,5 +40,40 @@ html_static_path = ['_static']
 source_suffix = {
     '.rst': 'restructuredtext',
     '.txt': 'markdown',
-    '.md': 'markdown',
+    '.md': 'myst',
 }
+
+autodoc_default_options = {
+    'members': True,
+    'undoc-members': False,   
+    'show-inheritance': True
+}
+
+extensions = [
+    'myst_parser',
+    'jupyter_sphinx',
+    'sphinx_design',
+    'sphinx.ext.autodoc',
+    'sphinx.ext.napoleon',
+    'sphinx.ext.viewcode'
+]
+
+def autodoc_skip_member(app, what, name, obj, skip, options):
+    if not hasattr(obj, "__doc__"):
+        return skip
+
+    if obj.__doc__ is None or obj.__doc__.strip() == "":
+        return True
+
+    return skip
+
+def setup(app):
+    app.connect('autodoc-skip-member', autodoc_skip_member)
+
+autodoc_mock_imports = ["multiprocess"]
+
+napoleon_google_docstring = False  
+napoleon_numpy_docstring = True    
+napoleon_include_private_with_doc = False
+napoleon_use_param = True
+napoleon_use_rtype = True

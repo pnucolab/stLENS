@@ -35,7 +35,7 @@ def _get_tempdir(p):
 
 
 def _find_compiled_library(library_name):
-    """
+    '''
     Find the compiled shared library, checking multiple possible locations.
     
     Args:
@@ -46,7 +46,7 @@ def _find_compiled_library(library_name):
         
     Raises:
         FileNotFoundError: If the library cannot be found
-    """
+    '''
     import platform
     
     # Get the current module directory
@@ -138,6 +138,41 @@ class stLENS():
         min_cells_per_gene=15, mito_percent=5., ribo_percent=0.,
         inplace=True, use_raw=True
     ):
+        """
+        Filter cells and genes in the AnnData object using the scLENS approach.
+        
+        Parameters
+        ----------
+        data : anndata.AnnData
+            Input AnnData object containing the data to be filtered.
+        min_tp_c : int, optional
+            Minimum total counts per cell. Default is 0.
+        min_tp_g : int, optional
+            Minimum total counts per gene. Default is 0.
+        max_tp_c : int, optional
+            Maximum total counts per cell. Default is np.inf.
+        max_tp_g : int, optional
+            Maximum total counts per gene. Default is np.inf.
+        min_genes_per_cell : int, optional
+            Minimum number of genes per cell. Default is 200.
+        max_genes_per_cell : int, optional
+            Maximum number of genes per cell. Default is 0.
+        min_cells_per_gene : int, optional
+            Minimum number of cells expressing each gene. Default is 15.
+        mito_percent : float, optional
+            Upper threshold for mitochondrial gene expression as a percentage of total cell expression. Default is 5.0.
+        ribo_percent : float, optional
+            Upper threshold for ribosomal gene expression as a percentage of total cell expression. Default is 0.0.
+        inplace : bool, optional
+            If True, modifies the input AnnData object directly. If False, returns a new AnnData object.
+        use_raw : bool, optional
+            If True, uses the raw attribute of the AnnData object. Default is True.
+
+        Returns
+        -------
+        data_filtered : anndata.AnnData or None
+            If inplace is True, returns None. If False, returns the filtered AnnData object.
+        """
         is_anndata = True
         if isinstance(data, pd.DataFrame):
             is_anndata = False
@@ -278,7 +313,8 @@ class stLENS():
 
         tmp_prefix = uuid.uuid4()
         normalized_X.to_zarr(f"{tmp_dir}/{tmp_prefix}-normalized_X.zarr")
-    
+        if inplace:
+            data.X = sp.csr_matrix(normalized_X.compute())
         return da.from_zarr(f"{tmp_dir}/{tmp_prefix}-normalized_X.zarr")
 
     def _preprocess_rand(self, X, inplace=True, chunk_size = 'auto'):
@@ -290,6 +326,22 @@ class stLENS():
         return X.compute()
     
     def pca(self, adata, inplace=True, device='gpu'):
+        """
+        Perform PCA on the given AnnData object.
+        Parameters
+        ----------
+        adata : anndata.AnnData
+            Input AnnData object containing the data to be transformed.
+        inplace : bool, optional
+            If True, modifies the input AnnData object directly. If False, returns a new AnnData object.
+        device : str, optional
+            Device to use for computations, either 'cpu' or 'gpu'. Default is 'gpu'.
+
+        Returns
+        -------
+        adata : anndata.AnnData or None
+            If inplace is True, returns None. If False, returns the AnnData object with PCA results stored in `obsm['X_pca_stlens']`.
+        """
         if not inplace:
             adata = adata.copy()
         ri = adata.uns['stlens']['robust_idx']
@@ -315,6 +367,29 @@ class stLENS():
             return adata
 
     def find_optimal_pc(self, data, inplace=True, plot_mp = False, tmp_directory=None, device='gpu'):
+        """
+        Find the optimal number of principal components.
+
+        Parameters
+        ----------
+        data : pd.DataFrame or anndata.AnnData
+            Input data, either a pandas DataFrame or an AnnData object.
+        inplace : bool, optional
+            If True, modifies the input data directly. If False, returns a new AnnData object.
+        plot_mp : bool, optional
+            If True, plots the results of the PCA and SRT steps.
+        tmp_directory : str, optional
+            Temporary directory for storing intermediate results. If None, uses the system's temporary directory.
+        device : str, optional
+            Device to use for computations, either 'cpu' or 'gpu'. Default is 'gpu'.
+
+        Returns
+        -------
+        adata : anndata.AnnData or None
+            If inplace is True, returns None. If False, returns the normalized AnnData object.
+
+        """
+
         if not device in ['cpu', 'gpu']:
             raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
@@ -339,8 +414,11 @@ class stLENS():
         if not inplace:
             adata = adata.copy()
 
-        X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir))
 
+        X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir, inplace))
+        if not inplace:
+            adata.X = sp.csr_matrix(X_normalized.compute())
+            
         X_filtered = data.raw.X if hasattr(data.raw, 'X') else data.X
         if isinstance(X_filtered, anndata._core.views.ArrayView):
             X_filtered = sp.csr_matrix(X_filtered)
@@ -830,6 +908,17 @@ class stLENS():
     
 
     def plot_robust_score(self, adata):
+        """
+        Plot the robust scores and their stability.
+        Parameters
+        ----------
+        adata : anndata.AnnData
+            AnnData object containing the results of the stLENS analysis.
+
+        Returns
+        -------
+        scatter plot
+        """
         rs = adata.uns['stlens']['robust_scores']
         ri = adata.uns['stlens']['robust_idx']
         if isinstance(ri, np.ndarray):
