@@ -276,7 +276,7 @@ class stLENS():
 
         return X
     
-    def normalize_process(self, data, tmp_dir):
+    def normalize_process(self, data, tmp_dir, inplace):
         use_raw = hasattr(data.raw, 'X')
         raw_X = data.raw.X if use_raw else data.X
         if sp.issparse(raw_X):
@@ -286,6 +286,8 @@ class stLENS():
 
         tmp_prefix = uuid.uuid4()
         normalized_X.to_zarr(f"{tmp_dir}/{tmp_prefix}-normalized_X.zarr")
+        if inplace:
+            data.X = sp.csr_matrix(normalized_X.compute())
         return da.from_zarr(f"{tmp_dir}/{tmp_prefix}-normalized_X.zarr")
 
     def _preprocess_rand(self, X, inplace=True, chunk_size = 'auto'):
@@ -346,7 +348,10 @@ class stLENS():
         if not inplace:
             adata = adata.copy()
 
-        X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir, ))
+        X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir, inplace))
+        if not inplace:
+            adata.X = sp.csr_matrix(X_normalized.compute())
+
         X_filtered = data.raw.X if hasattr(data.raw, 'X') else data.X
         if isinstance(X_filtered, anndata._core.views.ArrayView):
             X_filtered = sp.csr_matrix(X_filtered)
@@ -586,15 +591,25 @@ class stLENS():
             robust_idx_np = robust_idx.get()
         else:
             robust_idx_np = robust_idx
-        data.uns['stlens'] = {
-            'optimal_pc_count': int(np.sum(robust_idx_np)),
-            'robust_idx': robust_idx,
-            'robust_scores': pert_scores,
-        }
-        print(f"number of filtered signals: {data.uns['stlens']['optimal_pc_count']}")
 
-        return data.uns['stlens']['optimal_pc_count']
-    
+        if inplace:
+            data.uns['stlens'] = {
+                'optimal_pc_count': int(np.sum(robust_idx_np)),
+                'robust_idx': robust_idx,
+                'robust_scores': pert_scores,
+            }
+            print(f"number of filtered signals: {data.uns['stlens']['optimal_pc_count']}")
+            return None
+
+        else:
+            adata.uns['stlens'] = {
+                'optimal_pc_count': int(np.sum(robust_idx_np)),
+                'robust_idx': robust_idx,
+                'robust_scores': pert_scores,
+            }
+            print(f"number of filtered signals: {adata.uns['stlens']['optimal_pc_count']}")
+            return adata
+
     
     def _calculate_sparsity(self, X_filtered, tmp_dir, device):
         tmp_prefix = uuid.uuid4()
