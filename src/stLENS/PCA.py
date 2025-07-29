@@ -43,9 +43,10 @@ class PCA():
 
 
             del Xr
-            cp.get_default_memory_pool().free_all_blocks()
-            cp.get_default_pinned_memory_pool().free_all_blocks()
-            cp._default_memory_pool.free_all_blocks() 
+            if self.device == "gpu":
+                cp.get_default_memory_pool().free_all_blocks()
+                cp.get_default_pinned_memory_pool().free_all_blocks()
+                cp._default_memory_pool.free_all_blocks() 
             gc.collect()
 
             self.explained_variance_ = (self.L**2) / self.n_cells
@@ -71,8 +72,9 @@ class PCA():
         self.n_components = len(self.Ls)
         print(f"Number of signal: {self.n_components}")
 
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
+        if self.device == "gpu":
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
         gc.collect()
 
     def get_signal_components(self, n_components=0):
@@ -141,9 +143,10 @@ class PCA():
             raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
         del Y
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
-        cp._default_memory_pool.free_all_blocks() 
+        if self.device == "gpu":
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+            cp._default_memory_pool.free_all_blocks() 
         gc.collect()
         return L, V
 
@@ -163,9 +166,10 @@ class PCA():
 
         del X_dask, Xr_dask
         gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
-        cp._default_memory_pool.free_all_blocks() 
+        if self.device == "gpu":
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+            cp._default_memory_pool.free_all_blocks() 
         return Xr
     
 

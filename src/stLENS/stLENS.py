@@ -17,8 +17,8 @@ import ctypes
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 
-import multiprocessing as mp
-from multiprocessing import Queue
+import multiprocess as mp
+from multiprocess import Queue
 import shutil
 import os
 import gc
@@ -113,15 +113,7 @@ class stLENS():
         self._perturbed_n_scale = perturbed_n_scale
         self.n_rand_matrix = n_rand_matrix
         self.threshold = threshold
-
-    # process 1 : preprocessing(inplace=True)
-    def _run_in_process(self, target, args=()):
-
-        p = mp.Process(target=target, args=args)
-        p.start()
-        p.join()
-        if p.exitcode != 0:
-            raise RuntimeError(f"{target.__name__} failed with exit code {p.exitcode}")
+        mp.set_start_method('spawn')
         
     # process 1 : preprocessing
     # process 2 : calculate sparsity
@@ -339,7 +331,7 @@ class stLENS():
             X = sp.csr_matrix(data.iloc[:, 1:].values) 
             var = pd.DataFrame(data.columns[1:])
             var.columns = ['gene'] 
-            adata = sc.AnnData(X, obs=obs, var=var)
+            data = sc.AnnData(X, obs=obs, var=var)
         elif isinstance(data, sc.AnnData):
             adata = data
         else:
@@ -359,6 +351,9 @@ class stLENS():
         # calculate sparsity
         if self.sparsity == 'auto':
             self.sparsity = self._run_in_process_value(self._calculate_sparsity, args=(X_filtered, tmp_dir, device))
+            print(f"Sparsity calculation completed: {self.sparsity}")
+        else:
+            print(f"Using predefined sparsity: {self.sparsity}")
 
         # RMT
         pca_result = self._PCA(X_normalized, plot_mp = plot_mp, device=device)
@@ -389,8 +384,7 @@ class stLENS():
 
                 del _signal_components, re
                 gc.collect()
-                cp._default_memory_pool.free_all_blocks()
-
+                
         # SRT
         class CSRMatrix(ctypes.Structure):
             _fields_ = [
@@ -674,13 +668,13 @@ class stLENS():
             raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
         del bin_nor
-        gc.collect()
-        cp._default_memory_pool.free_all_blocks()
-        
+        gc.collect()        
 
         n_vbp = Vb.shape[1]//2
         n_buffer = 5
         buffer = [1] * n_buffer
+
+        print(f"Initial sparse: {sparse}, threshold: {self.sparsity_threshold}")
 
         while sparse > self.sparsity_threshold:
             n_pert = int((1-sparse) * n_len)
@@ -752,7 +746,6 @@ class stLENS():
 
             del pert
             gc.collect()
-            cp._default_memory_pool.free_all_blocks() 
 
             if device == 'cpu' or strategy == 'cpu':
                 if isinstance(Vb, cp.ndarray):
@@ -786,7 +779,6 @@ class stLENS():
         
         del bin 
         gc.collect()
-        cp._default_memory_pool.free_all_blocks()
 
         return self.sparsity
 
@@ -803,9 +795,6 @@ class stLENS():
 
         del pca
         gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
-        cp._default_memory_pool.free_all_blocks()
     
         return comp
     
@@ -819,6 +808,8 @@ class stLENS():
             L, V = cp.linalg.eigh(Y)
 
             del Y
+            cp._default_memory_pool.free_all_blocks() 
+            cp.get_default_pinned_memory_pool().free_all_blocks()
             cp._default_memory_pool.free_all_blocks() 
             
         elif strategy == 'dask':
@@ -835,9 +826,6 @@ class stLENS():
 
         
         gc.collect()
-        cp.get_default_memory_pool().free_all_blocks()
-        cp.get_default_pinned_memory_pool().free_all_blocks()
-        cp._default_memory_pool.free_all_blocks() 
 
         return L, V
     
