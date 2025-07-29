@@ -268,7 +268,7 @@ class stLENS():
 
         return X
     
-    def normalize_process(self, data, tmp_dir, inplace):
+    def normalize_process(self, data, tmp_dir):
         use_raw = hasattr(data.raw, 'X')
         raw_X = data.raw.X if use_raw else data.X
         if sp.issparse(raw_X):
@@ -339,11 +339,7 @@ class stLENS():
         if not inplace:
             adata = adata.copy()
 
-        X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir, inplace))
-        if inplace:
-            data.X = sp.csr_matrix(X_normalized.compute())
-        else:
-            adata.X = sp.csr_matrix(X_normalized.compute())
+        X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir))
 
         X_filtered = data.raw.X if hasattr(data.raw, 'X') else data.X
         if isinstance(X_filtered, anndata._core.views.ArrayView):
@@ -588,6 +584,7 @@ class stLENS():
             robust_idx_np = robust_idx
 
         if inplace:
+            data.X = sp.csr_matrix(X_normalized.compute())
             data.uns['stlens'] = {
                 'optimal_pc_count': int(np.sum(robust_idx_np)),
                 'robust_idx': robust_idx,
@@ -597,6 +594,7 @@ class stLENS():
             return None
 
         else:
+            adata.X = sp.csr_matrix(X_normalized.compute())
             adata.uns['stlens'] = {
                 'optimal_pc_count': int(np.sum(robust_idx_np)),
                 'robust_idx': robust_idx,
