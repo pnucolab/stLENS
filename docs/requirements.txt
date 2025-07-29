@@ -4,3 +4,4 @@ myst-parser
 jupyter-sphinx
 sphinx_design
 multiprocess
+sphinx-autoapi

@@ -8,4 +8,5 @@ Welcome to the stLENS documentation!
 installation
 tutorials/index
 api/index
+autoapi/index 
 ```

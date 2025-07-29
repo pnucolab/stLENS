@@ -23,7 +23,8 @@ extensions = [
     'sphinx_design',
     'sphinx.ext.autodoc',    
     'sphinx.ext.napoleon',   
-    'sphinx.ext.viewcode'
+    'sphinx.ext.viewcode',
+    'autoapi.extension'
 ]
 
 templates_path = ['_templates']
@@ -71,6 +72,9 @@ def setup(app):
     app.connect('autodoc-skip-member', autodoc_skip_member)
 
 autodoc_mock_imports = ["multiprocess"]
+
+autoapi_keep_files = True
+autoapi_add_toctree_entry = True
 
 napoleon_google_docstring = False  
 napoleon_numpy_docstring = True    
