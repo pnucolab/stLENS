@@ -417,8 +417,6 @@ class stLENS():
 
 
         X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir))
-        if not inplace:
-            adata.X = sp.csr_matrix(X_normalized.compute())
 
         X_filtered = data.raw.X if hasattr(data.raw, 'X') else data.X
         if isinstance(X_filtered, anndata._core.views.ArrayView):
