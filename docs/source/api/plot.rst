@@ -3,4 +3,5 @@ Plot
 
 .. currentmodule:: stLENS.stLENS
 
-.. automethod:: stLENS.plot_robust_score
+.. autoclass:: stLENS
+   :members: plot_robust_score
