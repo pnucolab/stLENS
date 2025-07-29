@@ -27,6 +27,8 @@ extensions = [
     'autoapi.extension'
 ]
 
+autoapi_dirs = ['../../src']
+
 templates_path = ['_templates']
 exclude_patterns = []
 
@@ -49,15 +51,6 @@ autodoc_default_options = {
     'undoc-members': False,   
     'show-inheritance': True
 }
-
-extensions = [
-    'myst_parser',
-    'jupyter_sphinx',
-    'sphinx_design',
-    'sphinx.ext.autodoc',
-    'sphinx.ext.napoleon',
-    'sphinx.ext.viewcode'
-]
 
 def autodoc_skip_member(app, what, name, obj, skip, options):
     if not hasattr(obj, "__doc__"):
