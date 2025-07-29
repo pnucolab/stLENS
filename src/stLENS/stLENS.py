@@ -328,6 +328,7 @@ class stLENS():
     def pca(self, adata, inplace=True, device='gpu'):
         """
         Perform PCA on the given AnnData object.
+        
         Parameters
         ----------
         adata : anndata.AnnData
