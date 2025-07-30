@@ -19,6 +19,7 @@ release = '0.1'
 
 extensions = [
     'myst_parser',
+    'nbsphinx', 
     'jupyter_sphinx',
     'sphinx_design',
     'sphinx.ext.autodoc',    
@@ -49,6 +50,8 @@ source_suffix = {
     '.txt': 'markdown',
     '.md': 'myst',
 }
+
+nbsphinx_execute = "never"
 
 autodoc_default_options = {
     'members': True,
