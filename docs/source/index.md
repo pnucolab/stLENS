@@ -2,6 +2,18 @@
 
 Welcome to the stLENS documentation!
 
+## TL;DR
+```bash
+   pip install stLENS
+
+   from stLENS import stLENS
+   stlens = stLENS()
+
+   stlens.find_optimal_pc()
+   stlens.pca()
+```
+
+## Contents
 ```{toctree}
 :maxdepth: 1
 

@@ -32,6 +32,7 @@ Module Contents
 
 
    .. py:attribute:: threshold
+      :value: np.cos(np.deg2rad(60))
 
 
    .. py:method:: filter_cells_and_genes(data, min_tp_c=0, min_tp_g=0, max_tp_c=np.inf, max_tp_g=np.inf, min_genes_per_cell=200, max_genes_per_cell=0, min_cells_per_gene=15, mito_percent=5.0, ribo_percent=0.0, inplace=True, use_raw=True)
