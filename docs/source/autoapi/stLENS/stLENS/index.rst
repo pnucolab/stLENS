@@ -24,53 +24,8 @@ Functions
 Module Contents
 ---------------
 
-.. py:function:: _get_tempdir(p)
-
-.. py:function:: _find_compiled_library(library_name)
-
-   Find the compiled shared library, checking multiple possible locations.
-
-   Args:
-       library_name (str): Name of the library (e.g., 'random_matrix', 'perturb_omp')
-
-   Returns:
-       str: Path to the found library
-
-   Raises:
-       FileNotFoundError: If the library cannot be found
-
 
 .. py:class:: stLENS(sparsity='auto', sparsity_step=0.001, sparsity_threshold=0.9, perturbed_n_scale=2, n_rand_matrix=20, threshold=np.cos(np.deg2rad(60)))
-
-   .. py:attribute:: sparsity
-      :value: 'auto'
-
-
-
-   .. py:attribute:: sparsity_threshold
-      :value: 0.9
-
-
-
-   .. py:attribute:: sparsity_step
-      :value: 0.001
-
-
-
-   .. py:attribute:: _perturbed_n_scale
-      :value: 2
-
-
-
-   .. py:attribute:: n_rand_matrix
-      :value: 20
-
-
-
-   .. py:attribute:: threshold
-
-
-   .. py:method:: _run_in_process_value(target, args=())
 
 
    .. py:method:: filter_cells_and_genes(data, min_tp_c=0, min_tp_g=0, max_tp_c=np.inf, max_tp_g=np.inf, min_genes_per_cell=200, max_genes_per_cell=0, min_cells_per_gene=15, mito_percent=5.0, ribo_percent=0.0, inplace=True, use_raw=True)
@@ -104,16 +59,6 @@ Module Contents
 
       :returns: **data_filtered** -- If inplace is True, returns None. If False, returns the filtered AnnData object.
       :rtype: anndata.AnnData or None
-
-
-
-   .. py:method:: _normalize(_raw)
-
-
-   .. py:method:: normalize_process(data, tmp_dir)
-
-
-   .. py:method:: _preprocess_rand(X, inplace=True, chunk_size='auto')
 
 
    .. py:method:: pca(adata, inplace=True, device='gpu')
@@ -151,16 +96,6 @@ Module Contents
       :rtype: anndata.AnnData or None
 
 
-
-   .. py:method:: _calculate_sparsity(X_filtered, tmp_dir, device)
-
-
-   .. py:method:: _PCA(X, device, plot_mp=False)
-
-
-   .. py:method:: _PCA_rand(X, n, strategy, device)
-
-
    .. py:method:: plot_robust_score(adata)
 
       Plot the robust scores and their stability.
@@ -171,13 +106,8 @@ Module Contents
       :rtype: scatter plot
 
 
-
-   .. py:method:: estimate_matrix_memory(tuple, step)
-
-
-   .. py:method:: calculate_gpu_memory(gb, step)
-
-
    .. py:method:: clean_tempfiles()
 
+      Clean up temporary files created during processing.
 
+      :rtype: None

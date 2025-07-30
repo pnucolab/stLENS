@@ -10,18 +10,7 @@ Submodules
 .. toctree::
    :maxdepth: 1
 
-   /autoapi/stLENS/PCA/index
-   /autoapi/stLENS/calc/index
    /autoapi/stLENS/stLENS/index
-
-
-Attributes
-----------
-
-.. autoapisummary::
-
-   stLENS.stLENS
-   stLENS.__version__
 
 
 Package Contents
