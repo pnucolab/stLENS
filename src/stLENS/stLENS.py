@@ -303,9 +303,8 @@ class stLENS():
 
         return X
     
-    def _normalize_process(self, data, tmp_dir):
-        use_raw = hasattr(data.raw, 'X')
-        raw_X = data.raw.X if use_raw else data.X
+    def normalize_process(self, data, tmp_dir):
+        raw_X = data.X
         if sp.issparse(raw_X):
             normalized_X = self._normalize(raw_X.toarray())
         else:
