@@ -303,7 +303,7 @@ class stLENS():
 
         return X
     
-    def normalize_process(self, data, tmp_dir):
+    def _normalize_process(self, data, tmp_dir):
         use_raw = hasattr(data.raw, 'X')
         raw_X = data.raw.X if use_raw else data.X
         if sp.issparse(raw_X):
@@ -425,7 +425,7 @@ class stLENS():
             adata = adata.copy()
 
 
-        X_normalized = self._run_in_process_value(self.normalize_process, args=(adata, tmp_dir))
+        X_normalized = self._run_in_process_value(self._normalize_process, args=(adata, tmp_dir))
 
         X_filtered = data.raw.X if hasattr(data.raw, 'X') else data.X
         if isinstance(X_filtered, anndata._core.views.ArrayView):
@@ -522,12 +522,12 @@ class stLENS():
             if device == 'cpu': 
                 perturbed_L, perturbed_V = self._PCA_rand(rand, n, strategy='cpu', device=device)
             elif device == 'gpu':
-                gb = self.estimate_matrix_memory(rand.shape, step='pca_rand')
-                strategy = self.calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
+                gb = self._estimate_matrix_memory(rand.shape, step='pca_rand')
+                strategy = self._calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
                 perturbed_L, perturbed_V = self._PCA_rand(rand, n, strategy, device=device)
 
-                gb = self.estimate_matrix_memory(self._signal_components.shape, step='srt') 
-                strategy = self.calculate_gpu_memory(gb*20, step = 'srt') # gpu or cpu
+                gb = self._estimate_matrix_memory(self._signal_components.shape, step='srt') 
+                strategy = self._calculate_gpu_memory(gb*20, step = 'srt') # gpu or cpu
 
             else:
                 raise ValueError("The device must be either 'cpu' or 'gpu'.")
@@ -744,8 +744,8 @@ class stLENS():
             _, Vb= self._PCA_rand(bin_nor, bin.shape[0], strategy='cpu', device=device) 
                 
         elif device == 'gpu':
-            gb = self.estimate_matrix_memory(bin.shape, step='pca_rand')
-            strategy = self.calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
+            gb = self._estimate_matrix_memory(bin.shape, step='pca_rand')
+            strategy = self._calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
             _, Vb= self._PCA_rand(bin_nor, bin.shape[0], strategy, device=device)
             if isinstance(Vb, np.ndarray):
                 strategy = 'cpu'
@@ -822,9 +822,9 @@ class stLENS():
                 _, Vbp = self._PCA_rand(pert, n_vbp, strategy ='cpu', device=device) 
                     
             elif device == 'gpu':
-                gb = self.estimate_matrix_memory(pert.shape, step='pca_rand')
+                gb = self._estimate_matrix_memory(pert.shape, step='pca_rand')
                 if strategy == 'dask' or strategy == 'cupy':
-                    strategy = self.calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
+                    strategy = self._calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
                 _, Vbp = self._PCA_rand(pert, n_vbp, strategy, device=device)
             else:
                 raise ValueError("The device must be either 'cpu' or 'gpu'.")
@@ -951,7 +951,7 @@ class stLENS():
 
         ax.invert_xaxis()
 
-    def estimate_matrix_memory(self, tuple, step):
+    def _estimate_matrix_memory(self, tuple, step):
         dtype = 4
         row = tuple[0]
         col = tuple[1]
@@ -976,7 +976,7 @@ class stLENS():
         
         return gb
 
-    def calculate_gpu_memory(self, gb, step):
+    def _calculate_gpu_memory(self, gb, step):
         free_mem, total_mem = cp.cuda.runtime.memGetInfo()
         total_gb = total_mem / (1024 ** 3)
         free_gb = free_mem / (1024 ** 3)

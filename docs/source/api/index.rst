@@ -1,9 +1,2 @@
-API
-=============
-
-.. toctree::
-   :maxdepth: 1
-
-   filtering
-   pca
-   plot
+.. include:: ../autoapi/stLENS_real/index.rst
+   :start-after: Module Contents

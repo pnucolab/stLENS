@@ -22,13 +22,22 @@ extensions = [
     'nbsphinx', 
     'jupyter_sphinx',
     'sphinx_design',
-    'sphinx.ext.autodoc',    
+    'sphinx.ext.autodoc', 
+    'sphinx.ext.autosummary',   
     'sphinx.ext.napoleon',   
     'sphinx.ext.viewcode',
     'autoapi.extension'
 ]
 
 autoapi_dirs = ['../../src']
+
+autoapi_options = [
+    "members",
+    "undoc-members",   
+    "show-inheritance",
+]
+autoapi_ignore = ["**/PCA.py", "**/calc.py", "*/__init__.py", "**/PCA/*", "**/calc/*"]
+
 
 templates_path = ['_templates']
 exclude_patterns = []
@@ -39,7 +48,6 @@ language = 'en'
 # https://www.sphinx-doc.org/en/master/usage/configuration.html#options-for-html-output
 
 html_theme = 'sphinx_rtd_theme'
-html_static_path = ['_static']
 html_theme_options = {
     "collapse_navigation": False,  
     "navigation_depth": 2,        
@@ -59,22 +67,11 @@ autodoc_default_options = {
     'show-inheritance': True
 }
 
-def autodoc_skip_member(app, what, name, obj, skip, options):
-    if not hasattr(obj, "__doc__"):
-        return skip
-
-    if obj.__doc__ is None or obj.__doc__.strip() == "":
-        return True
-
-    return skip
-
-def setup(app):
-    app.connect('autodoc-skip-member', autodoc_skip_member)
-
-autodoc_mock_imports = ["multiprocess"]
+autodoc_mock_imports = ["multiprocess", "scanpy"]
 
 autoapi_keep_files = True
 autoapi_add_toctree_entry = False
+autosummary_generate = True
 
 napoleon_google_docstring = False  
 napoleon_numpy_docstring = True    

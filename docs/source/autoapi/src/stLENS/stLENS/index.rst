@@ -1,7 +1,7 @@
-stLENS.stLENS
-=============
+src.stLENS.stLENS
+=================
 
-.. py:module:: stLENS.stLENS
+.. py:module:: src.stLENS.stLENS
 
 
 
