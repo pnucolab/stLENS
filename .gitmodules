@@ -1,3 +1,4 @@
 [submodule "stLENS-tutorials"]
 	path = stLENS-tutorials
 	url = https://github.com/pnucolab/stLENS-tutorials
+	branch = main
