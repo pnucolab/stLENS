@@ -117,5 +117,8 @@ Module Contents
 
 
    .. py:method:: clean_tempfiles()
+      Clean up temporary files created during the analysis.
+
+      :rtype: None
 
 
