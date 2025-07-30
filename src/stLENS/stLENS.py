@@ -303,7 +303,7 @@ class stLENS():
 
         return X
     
-    def normalize_process(self, data, tmp_dir):
+    def _normalize_process(self, data, tmp_dir):
         raw_X = data.X
         if sp.issparse(raw_X):
             normalized_X = self._normalize(raw_X.toarray())
