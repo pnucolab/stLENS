@@ -344,18 +344,28 @@ class stLENS():
         if not inplace:
             adata = adata.copy()
         ri = adata.uns['stlens']['robust_idx']
+
+        if isinstance(ri, cp.ndarray):
+                ri = ri.get()
+
         if not hasattr(self, '_signal_components'):
             raise RuntimeError("You must run find_optimal_pc() before calc_pca().")
     
         if device == 'gpu':
-            X_transform = self._signal_components[:, ri] * cp.sqrt(
+            components = stlens._signal_components
+
+            if isinstance(components, np.ndarray):
+                    components = cp.asarray(components)
+
+            X_transform = components[:, ri] * cp.sqrt(
                 self.eigenvalue[ri]
             ).reshape(1, -1)
+
             if isinstance(X_transform, cp.ndarray):
                 X_transform = X_transform.get()
         elif device == 'cpu':
             X_transform = self._signal_components[:, ri] * np.sqrt(
-                self.eigenvalue[ri]
+                self.eigenvalue[ri].get()
             ).reshape(1, -1)
         else:
             raise ValueError("The device must be either 'cpu' or 'gpu'.")
@@ -364,6 +374,7 @@ class stLENS():
 
         if not inplace:
             return adata
+        
 
     def find_optimal_pc(self, data, inplace=True, plot_mp = False, tmp_directory=None, device='gpu'):
         """
