@@ -9,16 +9,16 @@ stLENS is a Python-based scalable tool to determine the optimal number of princi
    pip install stLENS
 ```
 ### Load data
-```bash
-   from stLENS import stLENS
-   stlens = stLENS()
-
+```python
    # Load data - it is recommended to use AnnData with count data stored in X
    import scanpy as sc
    adata = sc.read_h5ad("path/to/your_data.h5ad")
 ```
 ### Preprocessing with stLENS
-```bash
+```python
+    from stLENS import stLENS
+    stlens = stLENS()
+
    # Perform filtering before the steps below.
 
    # Find the optimal number of principal components.
