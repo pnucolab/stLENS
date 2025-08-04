@@ -8,6 +8,7 @@ except ImportError:
     )
 import pandas as pd
 import scipy.sparse as sp
+from scipy.sparse import vstack
 import numpy as np
 from tqdm.auto import tqdm
 import zarr 
@@ -669,8 +670,19 @@ class stLENS():
         else:
             robust_idx_np = robust_idx
 
+        sparse_chunks = []
+        for i in tqdm(range(X_normalized.numblocks[0]), desc="Saving normalized matrix to AnnData"):
+            chunk = X_normalized.blocks[i, 0].compute()  
+            sparse_chunk = sp.csr_matrix(chunk)
+            sparse_chunks.append(sparse_chunk)
+            del chunk, sparse_chunk
+            gc.collect()
+
         if inplace:
-            data.X = sp.csr_matrix(X_normalized.compute())
+            data.X = vstack(sparse_chunks)
+            del sparse_chunks
+            gc.collect()
+
             data.uns['stlens'] = {
                 'optimal_pc_count': int(np.sum(robust_idx_np)),
                 'robust_idx': robust_idx,
@@ -680,7 +692,10 @@ class stLENS():
             return None
 
         else:
-            adata.X = sp.csr_matrix(X_normalized.compute())
+            adata.X = vstack(sparse_chunks)
+            del sparse_chunks
+            gc.collect()
+
             adata.uns['stlens'] = {
                 'optimal_pc_count': int(np.sum(robust_idx_np)),
                 'robust_idx': robust_idx,
