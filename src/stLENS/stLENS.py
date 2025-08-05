@@ -323,7 +323,7 @@ class stLENS():
         X = self._normalize(X)
         return X.compute()
     
-    def pca(self, adata, inplace=True, device='gpu'):
+    def pca(self, adata, device='gpu'):
         """
         Perform PCA on the given AnnData object.
 
@@ -331,18 +331,13 @@ class stLENS():
         ----------
         adata : anndata.AnnData
             Input AnnData object containing the data to be transformed.
-        inplace : bool, optional
-            If True, modifies the input AnnData object directly. If False, returns a new AnnData object.
         device : str, optional
             Device to use for computations, either 'cpu' or 'gpu'. Default is 'gpu'.
-
         Returns
         -------
-        adata : anndata.AnnData or None
-            If inplace is True, returns None. If False, returns the AnnData object with PCA results stored in `obsm['X_pca_stlens']`.
+        adata : anndata.AnnData
         """
-        if not inplace:
-            adata = adata.copy()
+
         ri = adata.uns['stlens']['robust_idx']
 
         if isinstance(ri, cp.ndarray):
@@ -352,7 +347,7 @@ class stLENS():
             raise RuntimeError("You must run find_optimal_pc() before calc_pca().")
     
         if device == 'gpu':
-            components = stlens._signal_components
+            components = self._signal_components
 
             if isinstance(components, np.ndarray):
                     components = cp.asarray(components)
@@ -372,11 +367,10 @@ class stLENS():
 
         adata.obsm['X_pca_stlens'] = X_transform
 
-        if not inplace:
-            return adata
+        return adata
         
 
-    def find_optimal_pc(self, data, inplace=True, plot_mp = False, tmp_directory=None, device='gpu'):
+    def find_optimal_pc(self, data, plot_mp = False, tmp_directory=None, device='gpu'):
         """
         Find the optimal number of principal components.
 
@@ -384,8 +378,6 @@ class stLENS():
         ----------
         data : pd.DataFrame or anndata.AnnData
             Input data, either a pandas DataFrame or an AnnData object.
-        inplace : bool, optional
-            If True, modifies the input data directly. If False, returns a new AnnData object.
         plot_mp : bool, optional
             If True, plots the results of the PCA and SRT steps.
         tmp_directory : str, optional
@@ -395,9 +387,7 @@ class stLENS():
 
         Returns
         -------
-        adata : anndata.AnnData or None
-            If inplace is True, returns None. If False, returns the normalized AnnData object.
-
+        data : anndata.AnnData
         """
 
         if not device in ['cpu', 'gpu']:
@@ -408,9 +398,6 @@ class stLENS():
         is_anndata = True
         if isinstance(data, pd.DataFrame):
             is_anndata = False
-            if inplace:
-                print("Warning: input data is not AnnData - inplace will not work!")
-            inplace = True
             obs = pd.DataFrame(data['cell'])
             X = sp.csr_matrix(data.iloc[:, 1:].values) 
             var = pd.DataFrame(data.columns[1:])
@@ -420,10 +407,6 @@ class stLENS():
             adata = data
         else:
             raise ValueError("Data must be a pandas DataFrame or Anndata")
-
-        if not inplace:
-            adata = adata.copy()
-
 
         X_normalized = self._run_in_process_value(self._normalize_process, args=(adata, tmp_dir))
 
@@ -670,39 +653,14 @@ class stLENS():
         else:
             robust_idx_np = robust_idx
 
-        sparse_chunks = []
-        for i in tqdm(range(X_normalized.numblocks[0]), desc="Saving normalized matrix to AnnData"):
-            chunk = X_normalized.blocks[i, 0].compute()  
-            sparse_chunk = sp.csr_matrix(chunk)
-            sparse_chunks.append(sparse_chunk)
-            del chunk, sparse_chunk
-            gc.collect()
+        data.uns['stlens'] = {
+            'optimal_pc_count': int(np.sum(robust_idx_np)),
+            'robust_idx': robust_idx,
+            'robust_scores': pert_scores,
+        }
+        print(f"number of filtered signals: {data.uns['stlens']['optimal_pc_count']}")
 
-        if inplace:
-            data.X = vstack(sparse_chunks)
-            del sparse_chunks
-            gc.collect()
-
-            data.uns['stlens'] = {
-                'optimal_pc_count': int(np.sum(robust_idx_np)),
-                'robust_idx': robust_idx,
-                'robust_scores': pert_scores,
-            }
-            print(f"number of filtered signals: {data.uns['stlens']['optimal_pc_count']}")
-            return None
-
-        else:
-            adata.X = vstack(sparse_chunks)
-            del sparse_chunks
-            gc.collect()
-
-            adata.uns['stlens'] = {
-                'optimal_pc_count': int(np.sum(robust_idx_np)),
-                'robust_idx': robust_idx,
-                'robust_scores': pert_scores,
-            }
-            print(f"number of filtered signals: {adata.uns['stlens']['optimal_pc_count']}")
-            return adata
+        return data
 
     
     def _calculate_sparsity(self, X_filtered, tmp_dir, device):
