@@ -4,7 +4,7 @@ stLENS is a python-based scalable tool for determining the optimal number of pri
 It is designed to handle large-scale spatial omics datasets efficiently.
 
 <p align="center">
-  <img src="images.png" width="300">
+  <img src="images.png" width="500px">
 </p>
 
 ## Features
