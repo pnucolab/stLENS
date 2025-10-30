@@ -277,7 +277,7 @@ class stLENS():
     # preprocessing - normalizing
     def _normalize(self, _raw):
             
-        chunk_size = (10000, _raw.shape[1])
+        chunk_size = (8000, _raw.shape[1])
         if isinstance(_raw, da.core.Array):
             X = _raw
         else:
