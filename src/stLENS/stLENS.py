@@ -27,6 +27,9 @@ import glob
 import dask.array as da
 import tempfile
 import uuid
+from dask.distributed import Client
+import time
+from numcodecs import Blosc
 
 from .PCA import PCA
 
@@ -125,6 +128,7 @@ class stLENS():
             queue.put(result)
         p = mp.Process(target=wrapper, args=(queue, *args))
         p.start()
+        
         p.join()
         if p.exitcode != 0:
             raise RuntimeError(f"{target.__name__} failed with exit code {p.exitcode}")
@@ -277,7 +281,7 @@ class stLENS():
     # preprocessing - normalizing
     def _normalize(self, _raw):
             
-        chunk_size = (8000, _raw.shape[1])
+        chunk_size = (10000, _raw.shape[1])
         if isinstance(_raw, da.core.Array):
             X = _raw
         else:
@@ -314,7 +318,22 @@ class stLENS():
         tmp_prefix = uuid.uuid4()
         normalized_X.to_zarr(f"{tmp_dir}/{tmp_prefix}-normalized_X.zarr")
         return da.from_zarr(f"{tmp_dir}/{tmp_prefix}-normalized_X.zarr")
+    
+    def _as_dask_array(self, X, row_chunks=10000):
+        if sp.issparse(X):
+            X = X.toarray() 
+        return da.from_array(X, chunks=(row_chunks, X.shape[1]))
 
+    def _normalize_mp(self, adata, in_store, out_store):
+        # X_da = self._as_dask_array(adata)
+        # da.to_zarr(X_da, in_store, overwrite=True)
+        X = da.from_zarr(in_store)
+        Xn = self._normalize(X)
+        compressor = Blosc(cname="zstd", clevel=3, shuffle=Blosc.BITSHUFFLE)
+        Xn.to_zarr(out_store, compressor = compressor)
+        return out_store
+
+    
     def _preprocess_rand(self, X, inplace=True, chunk_size = 'auto'):
         if not inplace:
             X = X.copy()
@@ -369,8 +388,7 @@ class stLENS():
 
         return adata
         
-
-    def find_optimal_pc(self, data, plot_mp = False, tmp_directory=None, device='gpu'):
+    def find_optimal_pc(self, data, plot_mp = False, tmp_directory=None, device='gpu', cluster = None, client_dir = None):
         """
         Find the optimal number of principal components.
 
@@ -408,7 +426,23 @@ class stLENS():
         else:
             raise ValueError("Data must be a pandas DataFrame or Anndata")
 
-        X_normalized = self._run_in_process_value(self._normalize_process, args=(adata, tmp_dir))
+        if cluster is None:
+            X_normalized = self._run_in_process_value(self._normalize_process, args=(adata, tmp_dir))
+
+        else:
+            if client_dir is None:
+                raise ValueError("client_dir must be defined if you use client")
+            client = Client(cluster)
+            
+            shared = client_dir
+            out_store = f"{shared}/Xn-{uuid.uuid4()}.zarr"
+            in_store = f"{shared}/X-{uuid.uuid4()}.zarr"
+            X_da = self._as_dask_array(adata.X)
+            da.to_zarr(X_da, in_store, overwrite=True, compute=True)
+
+            future = client.submit(self._normalize_mp, X_da, in_store, out_store, pure=False)
+            out_path = future.result()
+            X_normalized = da.from_zarr(out_path)
 
         # X_filtered = data.raw.X if hasattr(data.raw, 'X') else data.X
         X_filtered = data.X
