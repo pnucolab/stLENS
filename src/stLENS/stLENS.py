@@ -402,6 +402,10 @@ class stLENS():
             Temporary directory for storing intermediate results. If None, uses the system's temporary directory.
         device : str, optional
             Device to use for computations, either 'cpu' or 'gpu'. Default is 'gpu'.
+        cluster : dask.distributed.Client, optional
+            Dask distributed client for parallel processing. If None, runs in single server.
+        client_dir : str, optional
+            Shared directory for Dask client to store intermediate results. Required if cluster is provided.
 
         Returns
         -------
