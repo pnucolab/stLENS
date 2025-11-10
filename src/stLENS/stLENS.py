@@ -319,21 +319,25 @@ class stLENS():
         normalized_X.to_zarr(f"{tmp_dir}/{tmp_prefix}-normalized_X.zarr")
         return da.from_zarr(f"{tmp_dir}/{tmp_prefix}-normalized_X.zarr")
     
-    def _as_dask_array(self, X, row_chunks=10000):
+    def _as_dask_array(self, X, path):
         if sp.issparse(X):
-            X = X.toarray() 
-        return da.from_array(X, chunks=(row_chunks, X.shape[1]))
+            zarr_out = zarr.open(path, mode="w", shape=X.shape, dtype=np.float32, chunks=(10000, X.shape[1]))
 
-    def _normalize_mp(self, adata, in_store, out_store):
-        # X_da = self._as_dask_array(adata)
-        # da.to_zarr(X_da, in_store, overwrite=True)
-        X = da.from_zarr(in_store)
-        Xn = self._normalize(X)
-        compressor = Blosc(cname="zstd", clevel=3, shuffle=Blosc.BITSHUFFLE)
-        Xn.to_zarr(out_store, compressor = compressor)
-        return out_store
+            for i in range(0, X.shape[0], 10000):
+                end = min(i + 10000, X.shape[0])
+                block = X[i:end].toarray()
+                zarr_out[i:end] = block
+
+            return da.from_zarr(zarr_out)
+        else:
+            return da.from_array(X, chunks=(10000, X.shape[1]))
 
     
+    def _normalize_mp(self, adata, in_store, out_store):
+        X_da = self._as_dask_array(adata.X, in_store)
+        Xn = self._normalize(X_da)
+        Xn.to_zarr(out_store)
+        
     def _preprocess_rand(self, X, inplace=True, chunk_size = 'auto'):
         if not inplace:
             X = X.copy()
@@ -388,7 +392,7 @@ class stLENS():
 
         return adata
         
-    def find_optimal_pc(self, data, plot_mp = False, tmp_directory=None, device='gpu', cluster = None, client_dir = None):
+    def find_optimal_pc(self, data, plot_mp = False, tmp_directory=None, device='gpu', cluster = None):
         """
         Find the optimal number of principal components.
 
@@ -404,8 +408,6 @@ class stLENS():
             Device to use for computations, either 'cpu' or 'gpu'. Default is 'gpu'.
         cluster : dask.distributed.Client, optional
             Dask distributed client for parallel processing. If None, runs in single server.
-        client_dir : str, optional
-            Shared directory for Dask client to store intermediate results. Required if cluster is provided.
 
         Returns
         -------
@@ -434,19 +436,17 @@ class stLENS():
             X_normalized = self._run_in_process_value(self._normalize_process, args=(adata, tmp_dir))
 
         else:
-            if client_dir is None:
-                raise ValueError("client_dir must be defined if you use client")
+            if tmp_directory is None:
+                raise ValueError("tmp_directory must be defined if you use client")
             client = Client(cluster)
             
-            shared = client_dir
+            shared = tmp_directory
             out_store = f"{shared}/Xn-{uuid.uuid4()}.zarr"
             in_store = f"{shared}/X-{uuid.uuid4()}.zarr"
-            X_da = self._as_dask_array(adata.X)
-            da.to_zarr(X_da, in_store, overwrite=True, compute=True)
-
-            future = client.submit(self._normalize_mp, X_da, in_store, out_store, pure=False)
-            out_path = future.result()
-            X_normalized = da.from_zarr(out_path)
+        
+            future = client.submit(self._normalize_mp, adata, in_store, out_store, pure=False)
+            future.result()
+            X_normalized = da.from_zarr(out_store)
 
         # X_filtered = data.raw.X if hasattr(data.raw, 'X') else data.X
         X_filtered = data.X
