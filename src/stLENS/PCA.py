@@ -30,7 +30,7 @@ class PCA():
             if isinstance(self.L, np.ndarray):
                 self.device = 'cpu'
                 self.rmt_device = 'cpu'
-            self.Lr, self.Vr = self._get_eigen(Xr)
+            self.Lr, self.Vr = self._get_eigen(Xr, eigvals_only=True)
 
             if self.rmt_device != 'cpu' and isinstance(self.Lr, np.ndarray):
                 self.L = self.L.get()
@@ -94,7 +94,7 @@ class PCA():
         Y /= X.shape[1]
         return Y
 
-    def _wishart_streaming_gpu(self, X, chunk=10000):
+    def _wishart_streaming_gpu(self, X, chunk=30000):
         N, M = X.shape
         is_dask = isinstance(X, da.core.Array)
         if N >= M:
@@ -164,14 +164,18 @@ class PCA():
         others.sort(reverse=True)
         return [primary] + [d for _, d in others]
 
-    def _get_eigen(self, X):
+    def _get_eigen(self, X, eigvals_only=False):
         if self.device == 'gpu':
             gpu_order = self._gpu_device_order()
             for gpu_id in gpu_order:
                 try:
                     with cp.cuda.Device(gpu_id):
                         Y = self._wishart_streaming_gpu(X)
-                        L, V = cp.linalg.eigh(Y)
+                        if eigvals_only:
+                            L = cp.linalg.eigvalsh(Y)
+                            V = None
+                        else:
+                            L, V = cp.linalg.eigh(Y)
                         del Y
                         cp.get_default_memory_pool().free_all_blocks()
                         cp.get_default_pinned_memory_pool().free_all_blocks()
@@ -191,7 +195,11 @@ class PCA():
             Y = self._wishart_matrix(X)
             if hasattr(Y, 'compute'):
                 Y = Y.compute()
-            L, V = np.linalg.eigh(Y)
+            if eigvals_only:
+                L = np.linalg.eigvalsh(Y)
+                V = None
+            else:
+                L, V = np.linalg.eigh(Y)
             del Y
             gc.collect()
             return L, V
@@ -199,7 +207,11 @@ class PCA():
             Y = self._wishart_matrix(X)
             if hasattr(Y, 'compute'):
                 Y = Y.compute()
-            L, V = np.linalg.eigh(Y)
+            if eigvals_only:
+                L = np.linalg.eigvalsh(Y)
+                V = None
+            else:
+                L, V = np.linalg.eigh(Y)
             del Y
             gc.collect()
             return L, V
@@ -218,15 +230,12 @@ class PCA():
             return rng.permuted(block, axis=1)
 
         Xr_dask = X_dask.map_blocks(shuffle_block, dtype=X_dask.dtype)
-        Xr = Xr_dask.compute()
 
-        del X_dask, Xr_dask
-        gc.collect()
         if self.device == "gpu":
             cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
-            cp._default_memory_pool.free_all_blocks() 
-        return Xr
+            cp._default_memory_pool.free_all_blocks()
+        return Xr_dask
     
 
     def plot_mp(self, comparison=False, path=False, info=True, bins=None, title=None):
