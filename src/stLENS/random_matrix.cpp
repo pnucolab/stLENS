@@ -1,11 +1,9 @@
 #include <cstdlib>
-#include <ctime>
-#include <random>
-#include <vector>
 #include <algorithm>
-#include <iostream>
+#include <random>
 #include <unordered_set>
-#include <unordered_map>
+#include <vector>
+#include <omp.h>
 
 extern "C" {
 
@@ -27,60 +25,68 @@ void free_csr(CSRMatrix* mat) {
     }
 }
 
-inline int64_t encode_pair(int i, int j, int n_cols) {
-    return static_cast<int64_t>(i) * n_cols + j;
-}
-
 CSRMatrix* sparse_rand_csr(int n_rows, int n_cols, double density) {
-    int nnz_target = static_cast<int>(std::round(density * n_rows * n_cols));
+    std::vector<std::vector<int>> row_cols(n_rows);
+    std::vector<int> row_nnz(n_rows, 0);
 
-    std::mt19937 gen(std::random_device{}());
-    std::uniform_int_distribution<int> row_dis(0, n_rows - 1);
-    std::uniform_int_distribution<int> col_dis(0, n_cols - 1);
+    #pragma omp parallel
+    {
+        std::mt19937 gen(std::random_device{}() + omp_get_thread_num());
 
-    std::unordered_set<int64_t> hash_set;
-    hash_set.reserve(nnz_target);
+        #pragma omp for
+        for (int i = 0; i < n_rows; ++i) {
+            std::binomial_distribution<int> binom(n_cols, density);
+            int k = binom(gen);
 
-    while (hash_set.size() < static_cast<size_t>(nnz_target)) {
-        int i = row_dis(gen);
-        int j = col_dis(gen);
-        hash_set.insert(encode_pair(i, j, n_cols));
-    }
+            if (k <= 0) continue;
 
-    std::vector<std::vector<int>> row_to_cols(n_rows);
-    for (int64_t h : hash_set) {
-        int i = static_cast<int>(h / n_cols);
-        int j = static_cast<int>(h % n_cols);
-        row_to_cols[i].push_back(j);
+            if (k >= n_cols) {
+                row_cols[i].resize(n_cols);
+                for (int c = 0; c < n_cols; ++c) row_cols[i][c] = c;
+                row_nnz[i] = n_cols;
+                continue;
+            }
+
+            std::unordered_set<int> picked;
+            picked.reserve(static_cast<size_t>(k) * 2);
+            for (int j = n_cols - k; j < n_cols; ++j) {
+                std::uniform_int_distribution<int> uni(0, j);
+                int t = uni(gen);
+                if (picked.count(t)) picked.insert(j);
+                else                 picked.insert(t);
+            }
+
+            row_cols[i].assign(picked.begin(), picked.end());
+            std::sort(row_cols[i].begin(), row_cols[i].end());
+            row_nnz[i] = static_cast<int>(row_cols[i].size());
+        }
     }
 
     std::vector<int> indptr(n_rows + 1, 0);
-    std::vector<int> indices;
-    std::vector<float> data;
-
     for (int i = 0; i < n_rows; ++i) {
-        std::vector<int>& cols = row_to_cols[i];
-        std::sort(cols.begin(), cols.end());   
-        for (int j : cols) {
-            indices.push_back(j);
-            data.push_back(1.0f);
-        }
-        indptr[i + 1] = indices.size();
+        indptr[i + 1] = indptr[i] + row_nnz[i];
     }
+    int total_nnz = indptr[n_rows];
 
     CSRMatrix* mat = new CSRMatrix;
     mat->n_rows = n_rows;
     mat->n_cols = n_cols;
-    mat->nnz = static_cast<int>(indices.size());
+    mat->nnz = total_nnz;
+    mat->indptr = new int[n_rows + 1];
+    mat->indices = new int[total_nnz];
+    mat->data = new float[total_nnz];
 
-    mat->indptr = new int[indptr.size()];
     std::copy(indptr.begin(), indptr.end(), mat->indptr);
 
-    mat->indices = new int[indices.size()];
-    std::copy(indices.begin(), indices.end(), mat->indices);
-
-    mat->data = new float[data.size()];
-    std::copy(data.begin(), data.end(), mat->data);
+    #pragma omp parallel for
+    for (int i = 0; i < n_rows; ++i) {
+        int start = mat->indptr[i];
+        int size = row_nnz[i];
+        std::copy(row_cols[i].begin(), row_cols[i].end(), mat->indices + start);
+        for (int j = 0; j < size; ++j) {
+            mat->data[start + j] = 1.0f;
+        }
+    }
 
     return mat;
 }

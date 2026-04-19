@@ -93,62 +93,118 @@ class PCA():
             Y = (X.T @ X)
         Y /= X.shape[1]
         return Y
-    
+
+    def _wishart_streaming_gpu(self, X, chunk=10000):
+        N, M = X.shape
+        is_dask = isinstance(X, da.core.Array)
+        if N >= M:
+            Y = cp.zeros((M, M), dtype=cp.float32)
+            for i in range(0, N, chunk):
+                end = min(i + chunk, N)
+                block = X[i:end].compute() if is_dask else X[i:end]
+                X_gpu = cp.asarray(block, dtype=cp.float32)
+                Y += X_gpu.T @ X_gpu
+                del X_gpu
+                cp.get_default_memory_pool().free_all_blocks()
+        else:
+            Y = cp.zeros((N, N), dtype=cp.float32)
+            for j in range(0, M, chunk):
+                end = min(j + chunk, M)
+                block = X[:, j:end].compute() if is_dask else X[:, j:end]
+                X_gpu = cp.asarray(block, dtype=cp.float32)
+                Y += X_gpu @ X_gpu.T
+                del X_gpu
+                cp.get_default_memory_pool().free_all_blocks()
+        Y /= M
+        return Y
+
     def to_gpu(self, Y):
         chunk_size = (10000, Y.shape[1])
         if isinstance(Y, da.core.Array):
             Y_dask = Y
-        else : 
+        else:
             Y_dask = da.from_array(Y, chunks=chunk_size)
 
-        Y_gpu = cp.asarray(Y_dask.blocks[0])
+        Y_gpu = cp.empty(Y_dask.shape, dtype=Y_dask.dtype)
 
-        chunk = len(Y_dask.chunks[0])
-        for i in range(1, chunk):
+        offset = 0
+        for i in range(len(Y_dask.chunks[0])):
             block = cp.asarray(Y_dask.blocks[i])
-            Y_gpu = cp.concatenate((Y_gpu, block), axis=0)
+            n_rows = block.shape[0]
+            Y_gpu[offset:offset + n_rows] = block
+            offset += n_rows
 
             del block
             gc.collect()
             cp.get_default_memory_pool().free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
-            cp._default_memory_pool.free_all_blocks() 
+            cp._default_memory_pool.free_all_blocks()
 
-        del Y_dask, chunk_size, Y, chunk
+        del Y_dask, chunk_size, Y
         gc.collect()
         cp.get_default_memory_pool().free_all_blocks()
         cp.get_default_pinned_memory_pool().free_all_blocks()
-        cp._default_memory_pool.free_all_blocks() 
+        cp._default_memory_pool.free_all_blocks()
 
         return Y_gpu
     
-    def _get_eigen(self, X):
-        Y = self._wishart_matrix(X)
-        if self.device=='gpu':
-            try:
-                Y = self.to_gpu(Y)
-                L, V = cp.linalg.eigh(Y)
-            except cp.cuda.memory.OutOfMemoryError:
-                print('[Warning] GPU memory insufficient. Falling back to CPU computation.')
-                if isinstance(Y, cp.ndarray):
-                    Y = Y.get()
-                    cp.get_default_memory_pool().free_all_blocks()
-                    cp.get_default_pinned_memory_pool().free_all_blocks()
-                    cp._default_memory_pool.free_all_blocks()
-                    L, V = np.linalg.eigh(Y)
+    @staticmethod
+    def _gpu_device_order():
+        n_devices = cp.cuda.runtime.getDeviceCount()
+        primary = cp.cuda.Device().id
+        if n_devices <= 1:
+            return [primary]
+        others = []
+        for d in range(n_devices):
+            if d == primary:
+                continue
+            with cp.cuda.Device(d):
+                free, _ = cp.cuda.runtime.memGetInfo()
+            others.append((free, d))
+        others.sort(reverse=True)
+        return [primary] + [d for _, d in others]
 
-        elif self.device=='cpu':
+    def _get_eigen(self, X):
+        if self.device == 'gpu':
+            gpu_order = self._gpu_device_order()
+            for gpu_id in gpu_order:
+                try:
+                    with cp.cuda.Device(gpu_id):
+                        Y = self._wishart_streaming_gpu(X)
+                        L, V = cp.linalg.eigh(Y)
+                        del Y
+                        cp.get_default_memory_pool().free_all_blocks()
+                        cp.get_default_pinned_memory_pool().free_all_blocks()
+                        cp._default_memory_pool.free_all_blocks()
+                    gc.collect()
+                    return L, V
+                except cp.cuda.memory.OutOfMemoryError:
+                    with cp.cuda.Device(gpu_id):
+                        cp.get_default_memory_pool().free_all_blocks()
+                        cp.get_default_pinned_memory_pool().free_all_blocks()
+                        cp._default_memory_pool.free_all_blocks()
+                    if gpu_id != gpu_order[-1]:
+                        print(f'[Warning] GPU {gpu_id} OOM in _get_eigen. Trying next GPU...', flush=True)
+                    continue
+
+            print('[Warning] All GPUs OOM in _get_eigen. Falling back to CPU computation.', flush=True)
+            Y = self._wishart_matrix(X)
+            if hasattr(Y, 'compute'):
+                Y = Y.compute()
             L, V = np.linalg.eigh(Y)
+            del Y
+            gc.collect()
+            return L, V
+        elif self.device == 'cpu':
+            Y = self._wishart_matrix(X)
+            if hasattr(Y, 'compute'):
+                Y = Y.compute()
+            L, V = np.linalg.eigh(Y)
+            del Y
+            gc.collect()
+            return L, V
         else:
             raise ValueError("The device must be either 'cpu' or 'gpu'.")
-
-        del Y
-        if self.device == "gpu":
-            cp.get_default_memory_pool().free_all_blocks()
-            cp.get_default_pinned_memory_pool().free_all_blocks()
-            cp._default_memory_pool.free_all_blocks() 
-        gc.collect()
-        return L, V
 
     def _random_matrix(self, X):
 
@@ -156,10 +212,10 @@ class PCA():
             X_dask = X
         else:
             X_dask = da.from_array(X, chunks=(10000, X.shape[1]))
+
         def shuffle_block(block):
-            for row in block:
-                np.random.shuffle(row)
-            return block
+            rng = np.random.default_rng()
+            return rng.permuted(block, axis=1)
 
         Xr_dask = X_dask.map_blocks(shuffle_block, dtype=X_dask.dtype)
         Xr = Xr_dask.compute()

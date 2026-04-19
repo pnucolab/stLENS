@@ -17,7 +17,7 @@ cpp_sources = [
   {
     'name': 'random_matrix',
     'source': src_dir / 'random_matrix.cpp',
-    'dependencies': []
+    'dependencies': openmp.found() ? [openmp] : []
   },
   {
     'name': 'perturb_omp', 

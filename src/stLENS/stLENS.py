@@ -30,6 +30,7 @@ import uuid
 from dask.distributed import Client
 import time
 from numcodecs import Blosc
+import numexpr as ne
 
 from .PCA import PCA
 
@@ -118,7 +119,52 @@ class stLENS():
         self.n_rand_matrix = n_rand_matrix
         self.threshold = threshold
         mp.set_start_method('spawn')
-        
+
+    @staticmethod
+    def _select_best_gpu():
+        n_devices = cp.cuda.runtime.getDeviceCount()
+        if n_devices <= 1:
+            return 0
+        best_device = 0
+        best_free = 0
+        for d in range(n_devices):
+            with cp.cuda.Device(d):
+                free, _ = cp.cuda.runtime.memGetInfo()
+            if free > best_free:
+                best_free = free
+                best_device = d
+        return best_device
+
+    @staticmethod
+    def _gpu_device_order():
+        """Return device ids in order: current primary first, then others by free memory desc."""
+        n_devices = cp.cuda.runtime.getDeviceCount()
+        primary = cp.cuda.Device().id
+        if n_devices <= 1:
+            return [primary]
+        others = []
+        for d in range(n_devices):
+            if d == primary:
+                continue
+            with cp.cuda.Device(d):
+                free, _ = cp.cuda.runtime.memGetInfo()
+            others.append((free, d))
+        others.sort(reverse=True)
+        return [primary] + [d for _, d in others]
+
+    @staticmethod
+    def _to_current_device(arr, dtype=None):
+        """Ensure arr is on the currently-active cupy device.
+        Handles numpy inputs and cross-device cupy arrays (via CPU roundtrip)."""
+        if isinstance(arr, np.ndarray):
+            return cp.asarray(arr, dtype=dtype) if dtype else cp.asarray(arr)
+        # cupy array
+        if arr.device.id == cp.cuda.Device().id:
+            return arr.astype(dtype, copy=False) if dtype else arr
+        # cross-device: copy via CPU
+        tmp = cp.asnumpy(arr)
+        return cp.asarray(tmp, dtype=dtype) if dtype else cp.asarray(tmp)
+
     # process 1 : preprocessing
     # process 2 : calculate sparsity
     def _run_in_process_value(self, target, args=()):
@@ -307,7 +353,57 @@ class stLENS():
         gc.collect()
 
         return X
-    
+
+    def _normalize_inplace(self, X):
+        if X.nbytes < 1024 ** 3:
+            return self._normalize_inplace_np(X)
+        return self._normalize_inplace_ne(X)
+
+    def _normalize_inplace_np(self, X):
+        l1 = np.linalg.norm(X, ord=1, axis=1, keepdims=True)
+        X /= l1
+        del l1
+
+        np.log1p(X, out=X)
+
+        mean = X.mean(axis=0)
+        std = X.std(axis=0)
+        X -= mean
+        X /= std
+        del mean, std
+
+        l2 = np.linalg.norm(X, ord=2, axis=1, keepdims=True)
+        scale = l2.mean()
+        X /= l2
+        X *= scale
+        del l2
+
+        X -= X.mean(axis=0)
+        return X
+
+    def _normalize_inplace_ne(self, X):
+        l1 = np.linalg.norm(X, ord=1, axis=1, keepdims=True)
+        ne.evaluate("X / l1", out=X)
+        del l1
+
+        ne.evaluate("log1p(X)", out=X)
+
+        mean = X.mean(axis=0)
+        std = X.std(axis=0)
+        ne.evaluate("(X - mean) / std", out=X)
+        del mean, std
+
+        l2 = np.linalg.norm(X, ord=2, axis=1, keepdims=True)
+        scale = l2.mean()
+        ne.evaluate("(X / l2) * scale", out=X)
+        del l2
+
+        mean2 = X.mean(axis=0)
+        ne.evaluate("X - mean2", out=X)
+        del mean2
+
+        return X
+
     def _normalize_process(self, data, tmp_dir):
         raw_X = data.X
         if sp.issparse(raw_X):
@@ -417,6 +513,11 @@ class stLENS():
         if not device in ['cpu', 'gpu']:
             raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
+        if device == 'gpu':
+            best_device = self._select_best_gpu()
+            cp.cuda.Device(best_device).use()
+            print(f"[stLENS] Using GPU device {best_device}", flush=True)
+
         tmp_dir = _get_tempdir(tmp_directory)
         tmp_prefix = uuid.uuid4()
         is_anndata = True
@@ -500,7 +601,7 @@ class stLENS():
                 ("n_rows", ctypes.c_int),
                 ("n_cols", ctypes.c_int),
             ]
-        
+
         # Find and load the random_matrix library
         lib_path = _find_compiled_library("random_matrix")
         lib = ctypes.CDLL(lib_path)
@@ -510,6 +611,35 @@ class stLENS():
 
         n_rows, n_cols = X_filtered.shape
         density = 1 - self.sparsity
+
+        if sp.issparse(X_filtered):
+            X_filtered = X_filtered.astype(np.float32, copy=False)
+        else:
+            X_filtered = np.asarray(X_filtered, dtype=np.float32)
+
+        dense_buf = np.empty((n_rows, n_cols), dtype=np.float32)
+        block_size = 10000
+
+        if device == 'gpu':
+            sig_is_gpu = isinstance(self._signal_components, cp.ndarray)
+            if not sig_is_gpu:
+                # Try to place signal_components on any GPU that has room
+                sig_cpu = self._signal_components
+                placed = False
+                for gpu_id in self._gpu_device_order():
+                    try:
+                        with cp.cuda.Device(gpu_id):
+                            self._signal_components = cp.asarray(sig_cpu)
+                        placed = True
+                        break
+                    except cp.cuda.memory.OutOfMemoryError:
+                        with cp.cuda.Device(gpu_id):
+                            cp.get_default_memory_pool().free_all_blocks()
+                            cp.get_default_pinned_memory_pool().free_all_blocks()
+                            cp._default_memory_pool.free_all_blocks()
+                if not placed:
+                    # Keep on CPU; SRT body will stream chunks
+                    self._signal_components = sig_cpu
 
         self.pert_vecs = list()
         for _ in tqdm(range(self.n_rand_matrix), total=self.n_rand_matrix):
@@ -522,35 +652,31 @@ class stLENS():
             indptr = np.ctypeslib.as_array(mat.indptr, shape=(mat.n_rows + 1,))
             indices = np.ctypeslib.as_array(mat.indices, shape=(mat.nnz,))
             mat_data = np.ctypeslib.as_array(mat.data, shape=(mat.nnz,))
-            rand = sp.csr_matrix((mat_data, indices, indptr), shape=(mat.n_rows, mat.n_cols)).copy()
+            rand_sp = sp.csr_matrix((mat_data, indices, indptr), shape=(mat.n_rows, mat.n_cols)).copy()
 
-            block_size = 10000
-            shape = rand.shape
-            rand_zarr_path = f"./{tmp_dir}/{tmp_prefix}-srt_perturbed.zarr"
-            zarr_out = zarr.open(rand_zarr_path, mode="w", shape=shape, dtype=np.float32, chunks=(block_size, shape[1]))
+            del indptr, indices, mat_data, mat
+            lib.free_csr(mat_ptr)
+            del mat_ptr
 
-            for i in range(0, shape[0], block_size):
-                end = min(i + block_size, shape[0])
-                block = (rand[i:end] + X_filtered[i:end])
+            for i in range(0, n_rows, block_size):
+                end = min(i + block_size, n_rows)
+                block = rand_sp[i:end] + X_filtered[i:end]
                 if sp.issparse(block):
-                    block = block.toarray()
-                zarr_out[i:end] = block
+                    block.toarray(out=dense_buf[i:end])
+                else:
+                    dense_buf[i:end] = block
 
-            rand = da.from_zarr(f"./{tmp_dir}/{tmp_prefix}-srt_perturbed.zarr")
-            rand = self._preprocess_rand(rand)
+            del rand_sp
+            rand = self._normalize_inplace(dense_buf)
             
             n = min(self._signal_components.shape[1] * self._perturbed_n_scale, X_normalized.shape[1])
 
-            if device == 'cpu': 
+            if device == 'cpu':
                 perturbed_L, perturbed_V = self._PCA_rand(rand, n, strategy='cpu', device=device)
             elif device == 'gpu':
                 gb = self._estimate_matrix_memory(rand.shape, step='pca_rand')
-                strategy = self._calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
-                perturbed_L, perturbed_V = self._PCA_rand(rand, n, strategy, device=device)
-
-                gb = self._estimate_matrix_memory(self._signal_components.shape, step='srt') 
-                strategy = self._calculate_gpu_memory(gb*20, step = 'srt') # gpu or cpu
-
+                pca_strategy = self._calculate_gpu_memory(gb, step='pca_rand')  # cupy or dask
+                perturbed_L, perturbed_V = self._PCA_rand(rand, n, pca_strategy, device=device)
             else:
                 raise ValueError("The device must be either 'cpu' or 'gpu'.")
 
@@ -559,7 +685,7 @@ class stLENS():
                 if rand.shape[0] <= rand.shape[1]:
                     perturbed = perturbed_V
                 else:
-                    perturbed_L = perturbed_L[-n:] 
+                    perturbed_L = perturbed_L[-n:]
                     re = rand @ perturbed_V @ np.diag(1/np.sqrt(perturbed_L))
                     re /= np.sqrt(rand.shape[1])
                     perturbed = re
@@ -577,83 +703,107 @@ class stLENS():
 
 
             elif device == 'gpu':
-                if strategy == 'cpu':
-                    
+                n_pert = perturbed_V.shape[1]
+                chunk = 10000
+
+                pert_vec_numpy = None
+                for gpu_id in self._gpu_device_order():
+                    try:
+                        with cp.cuda.Device(gpu_id):
+                            # === GPU streaming compute on gpu_id ===
+                            if rand.shape[0] <= rand.shape[1]:
+                                perturbed_gpu = self._to_current_device(perturbed_V)
+                            else:
+                                perturbed_L_trunc = perturbed_L[-n:]
+                                perturbed_V_gpu = self._to_current_device(perturbed_V, dtype=cp.float32)
+                                L_gpu = self._to_current_device(perturbed_L_trunc, dtype=cp.float32)
+                                inv_sqrt_L_gpu = 1.0 / cp.sqrt(L_gpu)
+                                norm_factor = cp.float32(1.0 / np.sqrt(rand.shape[1]))
+
+                                perturbed_gpu = cp.empty((rand.shape[0], n_pert), dtype=cp.float32)
+                                for i in range(0, rand.shape[0], chunk):
+                                    end = min(i + chunk, rand.shape[0])
+                                    rand_chunk_gpu = cp.asarray(rand[i:end], dtype=cp.float32)
+                                    perturbed_gpu[i:end] = rand_chunk_gpu @ perturbed_V_gpu * inv_sqrt_L_gpu * norm_factor
+                                    del rand_chunk_gpu
+                                del perturbed_V_gpu, L_gpu, inv_sqrt_L_gpu
+                                cp.get_default_memory_pool().free_all_blocks()
+
+                            # signal_components.T @ perturbed on current device (stream if on CPU or cross-device)
+                            sig_comp = self._signal_components
+                            sig_on_current = isinstance(sig_comp, cp.ndarray) and sig_comp.device.id == gpu_id
+                            if sig_on_current:
+                                pert_select_gpu = cp.abs(sig_comp.T @ perturbed_gpu)
+                            else:
+                                # Stream chunks from CPU (or cross-device cupy) onto current device
+                                sig_src = sig_comp if isinstance(sig_comp, np.ndarray) else cp.asnumpy(sig_comp)
+                                acc = cp.zeros((sig_src.shape[1], perturbed_gpu.shape[1]), dtype=cp.float32)
+                                for i in range(0, sig_src.shape[0], chunk):
+                                    end = min(i + chunk, sig_src.shape[0])
+                                    sig_chunk_gpu = cp.asarray(sig_src[i:end], dtype=cp.float32)
+                                    acc += sig_chunk_gpu.T @ perturbed_gpu[i:end]
+                                    del sig_chunk_gpu
+                                pert_select_gpu = cp.abs(acc)
+                                del acc
+                            pert_select_idx = cp.argmax(pert_select_gpu, axis=1)
+                            del pert_select_gpu
+
+                            pert_vec_numpy = cp.asnumpy(perturbed_gpu[:, pert_select_idx])
+
+                            del perturbed_gpu, pert_select_idx
+                            gc.collect()
+                            cp.get_default_memory_pool().free_all_blocks()
+                            cp.get_default_pinned_memory_pool().free_all_blocks()
+                            cp._default_memory_pool.free_all_blocks()
+                        break  # success, exit device loop
+                    except cp.cuda.memory.OutOfMemoryError:
+                        with cp.cuda.Device(gpu_id):
+                            cp.get_default_memory_pool().free_all_blocks()
+                            cp.get_default_pinned_memory_pool().free_all_blocks()
+                            cp._default_memory_pool.free_all_blocks()
+                        print(f'[Warning] GPU {gpu_id} OOM in SRT append. Trying next device...', flush=True)
+                        continue
+
+                if pert_vec_numpy is not None:
+                    self.pert_vecs.append(pert_vec_numpy)
+                    del rand, pert_vec_numpy
+                    gc.collect()
+                else:
+                    # CPU fallback (all GPUs OOM)
+                    print('[Warning] All GPUs OOM in SRT append. Falling back to CPU for this iteration.', flush=True)
+                    pV = cp.asnumpy(perturbed_V) if isinstance(perturbed_V, cp.ndarray) else perturbed_V
+                    pL = cp.asnumpy(perturbed_L) if isinstance(perturbed_L, cp.ndarray) else perturbed_L
+
                     if rand.shape[0] <= rand.shape[1]:
-                        perturbed = perturbed_V
+                        perturbed = pV
                     else:
-                        perturbed_L = perturbed_L[-n:] 
-                        perturbed_V = cp.asnumpy(perturbed_V)  
-                        perturbed_L = cp.asnumpy(perturbed_L)
-                        re = rand @ perturbed_V @ np.diag(1/np.sqrt(perturbed_L))
+                        pL = pL[-n:]
+                        re = rand @ pV @ np.diag(1/np.sqrt(pL))
                         re /= np.sqrt(rand.shape[1])
                         perturbed = re
+                        del re
 
-                        del perturbed_L, perturbed_V, re
-                        gc.collect()
-                        cp._default_memory_pool.free_all_blocks()
+                    sig_comp = self._signal_components
+                    if isinstance(sig_comp, cp.ndarray):
+                        sig_comp = cp.asnumpy(sig_comp)
+                        self._signal_components = sig_comp
 
-                    if isinstance(self._signal_components, np.ndarray):
-                        self._signal_components = self._signal_components
-                    else:
-                        self._signal_components = self._signal_components.get()
-
-                    pert_select = self._signal_components.T @ perturbed
-                    pert_select = np.abs(pert_select)
-                    pert_select = np.argmax(pert_select, axis = 1)
+                    pert_select = np.argmax(np.abs(sig_comp.T @ perturbed), axis=1)
                     self.pert_vecs.append(perturbed[:, pert_select])
 
-                    del rand, perturbed, pert_select
+                    del rand, perturbed, pert_select, pV, pL
                     gc.collect()
-                    cp.get_default_memory_pool().free_all_blocks()
-                    cp.get_default_pinned_memory_pool().free_all_blocks()
-                    cp._default_memory_pool.free_all_blocks()
 
-                elif strategy == 'gpu': 
-                    
-                    if rand.shape[0] <= rand.shape[1]:
-                        perturbed = cp.asarray(perturbed_V)
-                    else:
-                        perturbed_L = perturbed_L[-n:]
-                        perturbed_V = cp.asnumpy(perturbed_V)
-                        perturbed_L = cp.asnumpy(perturbed_L)
-                        re = rand @ perturbed_V @ np.diag(1/np.sqrt(perturbed_L))
-                        re /= np.sqrt(rand.shape[1])
-                        perturbed = cp.asarray(re)
-
-                        del perturbed_L, perturbed_V, re
-                        gc.collect()
-                        cp._default_memory_pool.free_all_blocks()
-                    
-                    if isinstance(self._signal_components, np.ndarray):
-                        self._signal_components = cp.asarray(self._signal_components)
-
-                    pert_select = self._signal_components.T @ perturbed
-                    pert_select = cp.abs(pert_select)
-                    pert_select = cp.argmax(pert_select, axis = 1)
-                    self.pert_vecs.append(perturbed[:, pert_select])
-
-                    del rand, perturbed, pert_select
-                    gc.collect()
-                    cp.get_default_memory_pool().free_all_blocks()
-                    cp.get_default_pinned_memory_pool().free_all_blocks()
-                    cp._default_memory_pool.free_all_blocks()
+        del dense_buf
+        gc.collect()
 
         if device == 'gpu':
             pert_scores = list()
-
-            if strategy == 'cpu':
-                for i in range(self.n_rand_matrix):
-                    for j in range(i+1, self.n_rand_matrix):
-                        dots = self.pert_vecs[i].T @ self.pert_vecs[j]
-                        corr = np.max(np.abs(dots), axis = 1)
-                        pert_scores.append(corr)
-            else:  # strategy == gpu
-                for i in range(self.n_rand_matrix):
-                    for j in range(i+1, self.n_rand_matrix):
-                        dots = self.pert_vecs[i].T @ self.pert_vecs[j]
-                        corr = cp.max(cp.abs(dots), axis = 1)
-                        pert_scores.append(corr)
+            for i in range(self.n_rand_matrix):
+                for j in range(i+1, self.n_rand_matrix):
+                    dots = self.pert_vecs[i].T @ self.pert_vecs[j]
+                    corr = np.max(np.abs(dots), axis=1)
+                    pert_scores.append(corr)
 
             pert_scores = cp.array(pert_scores)
 
@@ -702,6 +852,10 @@ class stLENS():
 
     
     def _calculate_sparsity(self, X_filtered, tmp_dir, device):
+        if device == 'gpu':
+            best_device = self._select_best_gpu()
+            cp.cuda.Device(best_device).use()
+            print(f"[stLENS:_calculate_sparsity] Using GPU device {best_device}", flush=True)
         tmp_prefix = uuid.uuid4()
         X_filtered = sp.csr_matrix(X_filtered)
 
@@ -710,10 +864,6 @@ class stLENS():
             X_filtered.indices,
             X_filtered.indptr),
             shape=X_filtered.shape)
-        
-        # for SRT stage, save it
-        bin_dask = da.from_array(bin_matrix.toarray(), chunks=(10000, bin_matrix.shape[1]))
-        bin_dask.to_zarr(f"{tmp_dir}/{tmp_prefix}-bin.zarr")
 
         sparse = 0.999
         shape_row, shape_col = X_filtered.shape
@@ -728,36 +878,21 @@ class stLENS():
                             for _ in range(5000)]).item()
         print(f'sparsity_th: {thresh}')
 
-        zero_indices_dict = {}
-        for row in range(shape_row):
-            col = X_filtered[row, :] 
-            zero_indices = np.setdiff1d(np.arange(shape_col), col.indices, assume_unique=True).astype(np.int32)
-            if zero_indices.size > 0:
-                zero_indices_dict[row] = zero_indices 
-        del col, zero_indices
-        gc.collect()
+        csr_indptr_np = np.ascontiguousarray(X_filtered.indptr, dtype=np.int32)
+        csr_indices_np = np.ascontiguousarray(X_filtered.indices, dtype=np.int32)
+        csr_indptr_ptr = csr_indptr_np.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        csr_indices_ptr = csr_indices_np.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
 
-        c_array_pointers = (ctypes.POINTER(ctypes.c_int32) * len(zero_indices_dict))()
-        for i, key in enumerate(zero_indices_dict):
-            c_array_pointers[i] = zero_indices_dict[key].ctypes.data_as(ctypes.POINTER(ctypes.c_int32))
-
-        row_sizes = []
-        for i in range(len(zero_indices_dict)):
-            row_sizes.append(len(zero_indices_dict[i]))
-        row_sizes = np.array(row_sizes, dtype=np.int32)
-
-        bin = da.from_zarr(f'{tmp_dir}/{tmp_prefix}-bin.zarr')
-
-        bin_nor = self._normalize(bin)
-        bin_nor = bin_nor.compute()
+        bin_nor = bin_matrix.toarray()
+        bin_nor = self._normalize_inplace(bin_nor)
 
         if device == 'cpu':
-            _, Vb= self._PCA_rand(bin_nor, bin.shape[0], strategy='cpu', device=device) 
-                
+            _, Vb= self._PCA_rand(bin_nor, bin_nor.shape[0], strategy='cpu', device=device)
+
         elif device == 'gpu':
-            gb = self._estimate_matrix_memory(bin.shape, step='pca_rand')
+            gb = self._estimate_matrix_memory(bin_nor.shape, step='pca_rand')
             strategy = self._calculate_gpu_memory(gb, step = 'pca_rand') # cupy or dask
-            _, Vb= self._PCA_rand(bin_nor, bin.shape[0], strategy, device=device)
+            _, Vb= self._PCA_rand(bin_nor, bin_nor.shape[0], strategy, device=device)
             if isinstance(Vb, np.ndarray):
                 strategy = 'cpu'
         else:
@@ -772,66 +907,69 @@ class stLENS():
 
         print(f"Initial sparse: {sparse}, threshold: {self.sparsity_threshold}")
 
+        rows, cols = X_filtered.shape
+        dense_buf = np.empty((rows, cols), dtype=np.float32)
+        block_size = 10000
+
+        # Load perturb_omp library once outside the loop
+        lib_path = _find_compiled_library("perturb_omp")
+        lib = ctypes.CDLL(lib_path)
+        lib.perturb_zeros.argtypes = [
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.POINTER(ctypes.c_int),
+            ctypes.c_int,
+            ctypes.c_int,
+            ctypes.c_double,
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_int)),
+            ctypes.POINTER(ctypes.c_int),
+        ]
+        lib.free_perturb_output.argtypes = [
+            ctypes.POINTER(ctypes.POINTER(ctypes.c_int)),
+            ctypes.c_int,
+        ]
+        lib.free_perturb_output.restype = None
+
         while sparse > self.sparsity_threshold:
             n_pert = int((1-sparse) * n_len)
             p = n_pert / n_zero
-            rows, cols = X_filtered.shape
-            n_pert, p, rows, cols
 
-            # Find and load the perturb_omp library
-            lib_path = _find_compiled_library("perturb_omp")
-            lib = ctypes.CDLL(lib_path)
-
-            lib.perturb_zeros.argtypes = [
-                ctypes.POINTER(ctypes.POINTER(ctypes.c_int)), 
-                ctypes.POINTER(ctypes.c_int),  
-                ctypes.c_int,  
-                ctypes.c_double,  
-                ctypes.POINTER(ctypes.POINTER(ctypes.c_int)), 
-                ctypes.POINTER(ctypes.c_int),  
-            ]
-
-            zero_list_ptr = c_array_pointers
-            row_sizes_ptr = row_sizes.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
             output_rows = (ctypes.POINTER(ctypes.c_int) * rows)()
             output_sizes = (ctypes.c_int * rows)()
 
-            lib.perturb_zeros(zero_list_ptr, row_sizes_ptr, rows, p, output_rows, output_sizes)
+            lib.perturb_zeros(csr_indptr_ptr, csr_indices_ptr, rows, cols, p, output_rows, output_sizes)
 
-            row_idx = []
-            col_idx = []
+            sizes_np = np.ctypeslib.as_array(output_sizes)
+            indptr = np.zeros(rows + 1, dtype=np.int32)
+            np.cumsum(sizes_np, dtype=np.int32, out=indptr[1:])
+            total_nnz = int(indptr[-1])
 
+            indices = np.empty(total_nnz, dtype=np.int32)
             for i in range(rows):
-                size = output_sizes[i]
+                size = int(sizes_np[i])
                 if size > 0:
-                    for j in range(size):
-                        row_idx.append(i)
-                        col_idx.append(output_rows[i][j])
+                    indices[indptr[i]:indptr[i + 1]] = np.ctypeslib.as_array(
+                        output_rows[i], shape=(size,)
+                    )
 
-            data = [1] * len(row_idx)
+            lib.free_perturb_output(output_rows, rows)
 
-            pert = sp.coo_matrix((data, (row_idx, col_idx)), shape=(rows, cols))
-            pert = pert.tocsr()
+            data = np.ones(total_nnz, dtype=np.float32)
+            pert = sp.csr_matrix((data, indices, indptr), shape=(rows, cols))
 
-            bin_sparse = bin_matrix
+            for i in range(0, rows, block_size):
+                end = min(i + block_size, rows)
+                block = pert[i:end] + bin_matrix[i:end]
+                if sp.issparse(block):
+                    block.toarray(out=dense_buf[i:end])
+                else:
+                    dense_buf[i:end] = block
 
-            shape = pert.shape
-            block_size = 10000
+            del pert
+            pert = self._normalize_inplace(dense_buf)
 
-            zarr_path = f"{tmp_dir}/{tmp_prefix}-perturbed.zarr"
-            zarr_out = zarr.open(zarr_path, mode="w", shape=shape, dtype=np.float32, chunks=(block_size, shape[1]))
-
-            for i in range(0, shape[0], block_size):
-                end = min(i + block_size, shape[0])
-                block = (pert[i:end] + bin_sparse[i:end]).toarray()
-                zarr_out[i:end] = block
-
-            pert = da.from_zarr(f"{tmp_dir}/{tmp_prefix}-perturbed.zarr")
-            pert = self._normalize(pert).compute()
-            
             if device == 'cpu' or strategy == 'cpu':
-                _, Vbp = self._PCA_rand(pert, n_vbp, strategy ='cpu', device=device) 
-                    
+                _, Vbp = self._PCA_rand(pert, n_vbp, strategy ='cpu', device=device)
+
             elif device == 'gpu':
                 gb = self._estimate_matrix_memory(pert.shape, step='pca_rand')
                 if strategy == 'dask' or strategy == 'cupy':
@@ -872,8 +1010,8 @@ class stLENS():
                 self.sparsity = sparse + self.sparsity_step * (n_buffer - 1)
                 break
             sparse -= self.sparsity_step
-        
-        del bin 
+
+        del dense_buf
         gc.collect()
 
         return self.sparsity
@@ -895,7 +1033,7 @@ class stLENS():
         return comp
     
 
-    def _PCA_rand(self, X, n, strategy, device): 
+    def _PCA_rand(self, X, n, strategy, device):
         pca = PCA(device = device)
 
         if strategy == 'cupy':
@@ -904,13 +1042,13 @@ class stLENS():
             L, V = cp.linalg.eigh(Y)
 
             del Y
-            cp._default_memory_pool.free_all_blocks() 
+            cp._default_memory_pool.free_all_blocks()
             cp.get_default_pinned_memory_pool().free_all_blocks()
-            cp._default_memory_pool.free_all_blocks() 
-            
+            cp._default_memory_pool.free_all_blocks()
+
         elif strategy == 'dask':
             L, V = pca._get_eigen(X)
-        
+
         else:
             Y = pca._wishart_matrix(X)
             L, V = np.linalg.eigh(Y)
@@ -920,7 +1058,7 @@ class stLENS():
 
         V = V[:, -n:]
 
-        
+
         gc.collect()
 
         return L, V
