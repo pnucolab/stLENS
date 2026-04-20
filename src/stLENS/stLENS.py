@@ -620,28 +620,27 @@ class stLENS():
         dense_buf = np.empty((n_rows, n_cols), dtype=np.float32)
         block_size = 10000
 
-        if device == 'gpu':
-            sig_is_gpu = isinstance(self._signal_components, cp.ndarray)
-            if not sig_is_gpu:
-                # Try to place signal_components on any GPU that has room
-                sig_cpu = self._signal_components
-                placed = False
-                for gpu_id in self._gpu_device_order():
-                    try:
-                        with cp.cuda.Device(gpu_id):
-                            self._signal_components = cp.asarray(sig_cpu)
-                        placed = True
-                        break
-                    except cp.cuda.memory.OutOfMemoryError:
-                        with cp.cuda.Device(gpu_id):
-                            cp.get_default_memory_pool().free_all_blocks()
-                            cp.get_default_pinned_memory_pool().free_all_blocks()
-                            cp._default_memory_pool.free_all_blocks()
-                if not placed:
-                    # Keep on CPU; SRT body will stream chunks
-                    self._signal_components = sig_cpu
+        if device == 'gpu' and isinstance(self._signal_components, np.ndarray):
+            self._signal_components = cp.asarray(self._signal_components)
 
         self.pert_vecs = list()
+        gpu_mode = (device == 'gpu')
+
+        def _srt_fallback_to_cpu():
+            nonlocal gpu_mode
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+            cp._default_memory_pool.free_all_blocks()
+            self.pert_vecs = [cp.asnumpy(pv) if isinstance(pv, cp.ndarray) else pv
+                              for pv in self.pert_vecs]
+            if isinstance(self._signal_components, cp.ndarray):
+                self._signal_components = cp.asnumpy(self._signal_components)
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+            cp._default_memory_pool.free_all_blocks()
+            gc.collect()
+            gpu_mode = False
+
         for _ in tqdm(range(self.n_rand_matrix), total=self.n_rand_matrix):
 
             mat_ptr = lib.sparse_rand_csr(n_rows, n_cols, density)
@@ -668,172 +667,126 @@ class stLENS():
 
             del rand_sp
             rand = self._normalize_inplace(dense_buf)
-            
+
             n = min(self._signal_components.shape[1] * self._perturbed_n_scale, X_normalized.shape[1])
 
-            if device == 'cpu':
-                perturbed_L, perturbed_V = self._PCA_rand(rand, n, strategy='cpu', device=device)
-            elif device == 'gpu':
-                gb = self._estimate_matrix_memory(rand.shape, step='pca_rand')
-                pca_strategy = self._calculate_gpu_memory(gb, step='pca_rand')  # cupy or dask
-                perturbed_L, perturbed_V = self._PCA_rand(rand, n, pca_strategy, device=device)
-            else:
-                raise ValueError("The device must be either 'cpu' or 'gpu'.")
+            if gpu_mode:
+                try:
+                    gb = self._estimate_matrix_memory(rand.shape, step='pca_rand')
+                    pca_strategy = self._calculate_gpu_memory(gb, step='pca_rand')
+                    perturbed_L, perturbed_V = self._PCA_rand(rand, n, pca_strategy, device='gpu')
 
-
-            if device == 'cpu':
-                if rand.shape[0] <= rand.shape[1]:
-                    perturbed = perturbed_V
-                else:
-                    perturbed_L = perturbed_L[-n:]
-                    re = rand @ perturbed_V @ np.diag(1/np.sqrt(perturbed_L))
-                    re /= np.sqrt(rand.shape[1])
-                    perturbed = re
-
-                    del perturbed_L, perturbed_V, re
-                    gc.collect()
-
-                pert_select = self._signal_components.T @ perturbed
-                pert_select = np.abs(pert_select)
-                pert_select = np.argmax(pert_select, axis = 1)
-                self.pert_vecs.append(perturbed[:, pert_select])
-
-                del rand, perturbed, pert_select
-                gc.collect()
-
-
-            elif device == 'gpu':
-                n_pert = perturbed_V.shape[1]
-                chunk = 10000
-
-                pert_vec_numpy = None
-                for gpu_id in self._gpu_device_order():
-                    try:
-                        with cp.cuda.Device(gpu_id):
-                            # === GPU streaming compute on gpu_id ===
-                            if rand.shape[0] <= rand.shape[1]:
-                                perturbed_gpu = self._to_current_device(perturbed_V)
-                            else:
-                                perturbed_L_trunc = perturbed_L[-n:]
-                                perturbed_V_gpu = self._to_current_device(perturbed_V, dtype=cp.float32)
-                                L_gpu = self._to_current_device(perturbed_L_trunc, dtype=cp.float32)
-                                inv_sqrt_L_gpu = 1.0 / cp.sqrt(L_gpu)
-                                norm_factor = cp.float32(1.0 / np.sqrt(rand.shape[1]))
-
-                                perturbed_gpu = cp.empty((rand.shape[0], n_pert), dtype=cp.float32)
-                                for i in range(0, rand.shape[0], chunk):
-                                    end = min(i + chunk, rand.shape[0])
-                                    rand_chunk_gpu = cp.asarray(rand[i:end], dtype=cp.float32)
-                                    perturbed_gpu[i:end] = rand_chunk_gpu @ perturbed_V_gpu * inv_sqrt_L_gpu * norm_factor
-                                    del rand_chunk_gpu
-                                del perturbed_V_gpu, L_gpu, inv_sqrt_L_gpu
-                                cp.get_default_memory_pool().free_all_blocks()
-
-                            # signal_components.T @ perturbed on current device (stream if on CPU or cross-device)
-                            sig_comp = self._signal_components
-                            sig_on_current = isinstance(sig_comp, cp.ndarray) and sig_comp.device.id == gpu_id
-                            if sig_on_current:
-                                pert_select_gpu = cp.abs(sig_comp.T @ perturbed_gpu)
-                            else:
-                                # Stream chunks from CPU (or cross-device cupy) onto current device
-                                sig_src = sig_comp if isinstance(sig_comp, np.ndarray) else cp.asnumpy(sig_comp)
-                                acc = cp.zeros((sig_src.shape[1], perturbed_gpu.shape[1]), dtype=cp.float32)
-                                for i in range(0, sig_src.shape[0], chunk):
-                                    end = min(i + chunk, sig_src.shape[0])
-                                    sig_chunk_gpu = cp.asarray(sig_src[i:end], dtype=cp.float32)
-                                    acc += sig_chunk_gpu.T @ perturbed_gpu[i:end]
-                                    del sig_chunk_gpu
-                                pert_select_gpu = cp.abs(acc)
-                                del acc
-                            pert_select_idx = cp.argmax(pert_select_gpu, axis=1)
-                            del pert_select_gpu
-
-                            pert_vec_numpy = cp.asnumpy(perturbed_gpu[:, pert_select_idx])
-
-                            del perturbed_gpu, pert_select_idx
-                            gc.collect()
-                            cp.get_default_memory_pool().free_all_blocks()
-                            cp.get_default_pinned_memory_pool().free_all_blocks()
-                            cp._default_memory_pool.free_all_blocks()
-                        break  # success, exit device loop
-                    except cp.cuda.memory.OutOfMemoryError:
-                        with cp.cuda.Device(gpu_id):
-                            cp.get_default_memory_pool().free_all_blocks()
-                            cp.get_default_pinned_memory_pool().free_all_blocks()
-                            cp._default_memory_pool.free_all_blocks()
-                        print(f'[Warning] GPU {gpu_id} OOM in SRT append. Trying next device...', flush=True)
-                        continue
-
-                if pert_vec_numpy is not None:
-                    self.pert_vecs.append(pert_vec_numpy)
-                    del rand, pert_vec_numpy
-                    gc.collect()
-                else:
-                    # CPU fallback (all GPUs OOM)
-                    print('[Warning] All GPUs OOM in SRT append. Falling back to CPU for this iteration.', flush=True)
-                    pV = cp.asnumpy(perturbed_V) if isinstance(perturbed_V, cp.ndarray) else perturbed_V
-                    pL = cp.asnumpy(perturbed_L) if isinstance(perturbed_L, cp.ndarray) else perturbed_L
+                    n_pert = perturbed_V.shape[1]
+                    chunk = 10000
 
                     if rand.shape[0] <= rand.shape[1]:
-                        perturbed = pV
+                        perturbed_gpu = cp.asarray(perturbed_V, dtype=cp.float32)
                     else:
-                        pL = pL[-n:]
-                        re = rand @ pV @ np.diag(1/np.sqrt(pL))
-                        re /= np.sqrt(rand.shape[1])
-                        perturbed = re
-                        del re
+                        perturbed_L_trunc = perturbed_L[-n:]
+                        perturbed_V_gpu = cp.asarray(perturbed_V, dtype=cp.float32)
+                        L_gpu = cp.asarray(perturbed_L_trunc, dtype=cp.float32)
+                        inv_sqrt_L_gpu = 1.0 / cp.sqrt(L_gpu)
+                        norm_factor = cp.float32(1.0 / np.sqrt(rand.shape[1]))
 
-                    sig_comp = self._signal_components
-                    if isinstance(sig_comp, cp.ndarray):
-                        sig_comp = cp.asnumpy(sig_comp)
-                        self._signal_components = sig_comp
+                        perturbed_gpu = cp.empty((rand.shape[0], n_pert), dtype=cp.float32)
+                        for i in range(0, rand.shape[0], chunk):
+                            end = min(i + chunk, rand.shape[0])
+                            rand_chunk_gpu = cp.asarray(rand[i:end], dtype=cp.float32)
+                            perturbed_gpu[i:end] = rand_chunk_gpu @ perturbed_V_gpu * inv_sqrt_L_gpu * norm_factor
+                            del rand_chunk_gpu
+                        del perturbed_V_gpu, L_gpu, inv_sqrt_L_gpu, perturbed_L_trunc
+                        cp.get_default_memory_pool().free_all_blocks()
 
-                    pert_select = np.argmax(np.abs(sig_comp.T @ perturbed), axis=1)
-                    self.pert_vecs.append(perturbed[:, pert_select])
+                    pert_select_idx = cp.argmax(cp.abs(self._signal_components.T @ perturbed_gpu), axis=1)
+                    pert_vec = perturbed_gpu[:, pert_select_idx].copy()
+                    self.pert_vecs.append(pert_vec)
 
-                    del rand, perturbed, pert_select, pV, pL
+                    del perturbed_gpu, pert_select_idx, perturbed_V, perturbed_L, rand, pert_vec
                     gc.collect()
+                    cp.get_default_memory_pool().free_all_blocks()
+                    cp.get_default_pinned_memory_pool().free_all_blocks()
+                    cp._default_memory_pool.free_all_blocks()
+                    continue
+
+                except cp.cuda.memory.OutOfMemoryError:
+                    print('[Warning] GPU OOM in SRT. Falling back to CPU for remaining iterations.', flush=True)
+                    _srt_fallback_to_cpu()
+                    # fall through to CPU path below to redo this iteration
+
+            # CPU path (primary when device=='cpu', or fallback after GPU OOM)
+            perturbed_L, perturbed_V = self._PCA_rand(rand, n, strategy='cpu', device='cpu')
+
+            if rand.shape[0] <= rand.shape[1]:
+                perturbed = perturbed_V
+            else:
+                perturbed_L = perturbed_L[-n:]
+                re = rand @ perturbed_V @ np.diag(1/np.sqrt(perturbed_L))
+                re /= np.sqrt(rand.shape[1])
+                perturbed = re
+                del perturbed_L, perturbed_V, re
+                gc.collect()
+
+            pert_select = np.argmax(np.abs(self._signal_components.T @ perturbed), axis=1)
+            self.pert_vecs.append(perturbed[:, pert_select])
+
+            del rand, perturbed, pert_select
+            gc.collect()
 
         del dense_buf
         gc.collect()
 
-        if device == 'gpu':
-            pert_scores = list()
+        pairwise_on_gpu = gpu_mode and all(isinstance(pv, cp.ndarray) for pv in self.pert_vecs)
+
+        if pairwise_on_gpu:
+            try:
+                pert_scores_list = []
+                for i in range(self.n_rand_matrix):
+                    for j in range(i + 1, self.n_rand_matrix):
+                        dots = self.pert_vecs[i].T @ self.pert_vecs[j]
+                        pert_scores_list.append(cp.max(cp.abs(dots), axis=1))
+                        del dots
+                pert_scores = cp.stack(pert_scores_list)
+                del pert_scores_list
+
+                def iqr(x):
+                    q1 = cp.percentile(x, 25)
+                    q3 = cp.percentile(x, 75)
+                    iqr_val = q3 - q1
+                    filtered = x[(x >= q1 - 1.5 * iqr_val) & (x <= q3 + 1.5 * iqr_val)]
+                    return cp.median(filtered)
+
+                rob_scores = cp.array([iqr(pert_scores[:, i]) for i in range(pert_scores.shape[1])])
+                robust_idx = rob_scores > self.threshold
+            except cp.cuda.memory.OutOfMemoryError:
+                print('[Warning] GPU OOM in pairwise correlation. Falling back to CPU.', flush=True)
+                cp.get_default_memory_pool().free_all_blocks()
+                cp.get_default_pinned_memory_pool().free_all_blocks()
+                cp._default_memory_pool.free_all_blocks()
+                self.pert_vecs = [cp.asnumpy(pv) if isinstance(pv, cp.ndarray) else pv
+                                  for pv in self.pert_vecs]
+                cp.get_default_memory_pool().free_all_blocks()
+                cp.get_default_pinned_memory_pool().free_all_blocks()
+                cp._default_memory_pool.free_all_blocks()
+                gc.collect()
+                pairwise_on_gpu = False
+
+        if not pairwise_on_gpu:
+            pert_scores_list = []
             for i in range(self.n_rand_matrix):
-                for j in range(i+1, self.n_rand_matrix):
+                for j in range(i + 1, self.n_rand_matrix):
                     dots = self.pert_vecs[i].T @ self.pert_vecs[j]
-                    corr = np.max(np.abs(dots), axis=1)
-                    pert_scores.append(corr)
-
-            pert_scores = cp.array(pert_scores)
-
-            def iqr(x):
-                q1 = cp.percentile(x, 25)
-                q3 = cp.percentile(x, 75)
-                iqr = q3 - q1
-                filtered = x[(x >= q1 -1.5*iqr) & (x <= q3 + 1.5*iqr)]
-                return cp.median(filtered)
-
-            rob_scores = cp.array([iqr(pert_scores[:,i]) for i in range(pert_scores.shape[1])])
-            robust_idx = rob_scores > self.threshold
-        elif device == 'cpu':
-            pert_scores = list()
-            for i in range(self.n_rand_matrix):
-                for j in range(i+1, self.n_rand_matrix):
-                    dots = self.pert_vecs[i].T @ self.pert_vecs[j]
-                    corr = np.max(np.abs(dots), axis = 1)
-                    pert_scores.append(corr)
-
-            pert_scores = np.array(pert_scores)
+                    pert_scores_list.append(np.max(np.abs(dots), axis=1))
+            pert_scores = np.stack(pert_scores_list)
+            del pert_scores_list
 
             def iqr(x):
                 q1 = np.percentile(x, 25)
                 q3 = np.percentile(x, 75)
-                iqr = q3 - q1
-                filtered = x[(x >= q1 -1.5*iqr) & (x <= q3 + 1.5*iqr)]
+                iqr_val = q3 - q1
+                filtered = x[(x >= q1 - 1.5 * iqr_val) & (x <= q3 + 1.5 * iqr_val)]
                 return np.median(filtered)
 
-            rob_scores = np.array([iqr(pert_scores[:,i]) for i in range(pert_scores.shape[1])])
+            rob_scores = np.array([iqr(pert_scores[:, i]) for i in range(pert_scores.shape[1])])
             robust_idx = rob_scores > self.threshold
 
         if isinstance(robust_idx, cp.ndarray):
@@ -902,8 +855,8 @@ class stLENS():
         gc.collect()        
 
         n_vbp = Vb.shape[1]//2
-        n_buffer = 5
-        buffer = [1] * n_buffer
+        prev_below = False
+        jump_step = self.sparsity_step * 4
 
         print(f"Initial sparse: {sparse}, threshold: {self.sparsity_threshold}")
 
@@ -1003,13 +956,27 @@ class stLENS():
                     corr_arr = np.max(np.abs(Vb.T @ Vbp), axis=0)
 
             corr = np.sort(corr_arr)[1]
-            buffer.pop(0)
-            buffer.append(corr)
+
+            del Vbp
+            if device == 'gpu':
+                cp.get_default_memory_pool().free_all_blocks()
+                cp.get_default_pinned_memory_pool().free_all_blocks()
+                cp._default_memory_pool.free_all_blocks()
+            gc.collect()
+
             print(f'Min(corr): {corr}, sparsity: {sparse}')
-            if all([x < thresh for x in buffer]):
-                self.sparsity = sparse + self.sparsity_step * (n_buffer - 1)
+            current_below = corr < thresh
+
+            if current_below and prev_below:
+                self.sparsity = sparse + jump_step
                 break
-            sparse -= self.sparsity_step
+            elif current_below:
+                next_sparse = sparse - jump_step
+            else:
+                next_sparse = sparse - self.sparsity_step
+
+            prev_below = current_below
+            sparse = next_sparse
 
         del dense_buf
         gc.collect()
