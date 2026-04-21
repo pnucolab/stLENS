@@ -698,10 +698,10 @@ class stLENS():
                         cp.get_default_memory_pool().free_all_blocks()
 
                     pert_select_idx = cp.argmax(cp.abs(self._signal_components.T @ perturbed_gpu), axis=1)
-                    pert_vec = perturbed_gpu[:, pert_select_idx].copy()
-                    self.pert_vecs.append(pert_vec)
+                    pert_vec_numpy = cp.asnumpy(perturbed_gpu[:, pert_select_idx])
+                    self.pert_vecs.append(pert_vec_numpy)
 
-                    del perturbed_gpu, pert_select_idx, perturbed_V, perturbed_L, rand, pert_vec
+                    del perturbed_gpu, pert_select_idx, perturbed_V, perturbed_L, rand, pert_vec_numpy
                     gc.collect()
                     cp.get_default_memory_pool().free_all_blocks()
                     cp.get_default_pinned_memory_pool().free_all_blocks()
@@ -735,19 +735,56 @@ class stLENS():
         del dense_buf
         gc.collect()
 
-        pairwise_on_gpu = gpu_mode and all(isinstance(pv, cp.ndarray) for pv in self.pert_vecs)
+        pairwise_on_gpu = gpu_mode
 
         if pairwise_on_gpu:
+            pert_vecs_gpu = None
             try:
+                # A-1: upload all 20 pert_vecs to GPU at once
+                pert_vecs_gpu = [cp.asarray(pv) for pv in self.pert_vecs]
                 pert_scores_list = []
                 for i in range(self.n_rand_matrix):
                     for j in range(i + 1, self.n_rand_matrix):
-                        dots = self.pert_vecs[i].T @ self.pert_vecs[j]
+                        dots = pert_vecs_gpu[i].T @ pert_vecs_gpu[j]
                         pert_scores_list.append(cp.max(cp.abs(dots), axis=1))
                         del dots
                 pert_scores = cp.stack(pert_scores_list)
-                del pert_scores_list
+                del pert_scores_list, pert_vecs_gpu
+                pert_vecs_gpu = None
+                cp.get_default_memory_pool().free_all_blocks()
+            except cp.cuda.memory.OutOfMemoryError:
+                print('[Warning] GPU OOM loading all pert_vecs. Streaming pair-by-pair.', flush=True)
+                if pert_vecs_gpu is not None:
+                    del pert_vecs_gpu
+                    pert_vecs_gpu = None
+                gc.collect()
+                cp.get_default_memory_pool().free_all_blocks()
+                cp.get_default_pinned_memory_pool().free_all_blocks()
+                cp._default_memory_pool.free_all_blocks()
 
+                # A-2: stream pv_i (held across inner loop), pv_j per pair
+                try:
+                    pert_scores_list = []
+                    for i in range(self.n_rand_matrix):
+                        pv_i_gpu = cp.asarray(self.pert_vecs[i])
+                        for j in range(i + 1, self.n_rand_matrix):
+                            pv_j_gpu = cp.asarray(self.pert_vecs[j])
+                            dots = pv_i_gpu.T @ pv_j_gpu
+                            pert_scores_list.append(cp.max(cp.abs(dots), axis=1))
+                            del dots, pv_j_gpu
+                        del pv_i_gpu
+                        cp.get_default_memory_pool().free_all_blocks()
+                    pert_scores = cp.stack(pert_scores_list)
+                    del pert_scores_list
+                except cp.cuda.memory.OutOfMemoryError:
+                    print('[Warning] Streaming pairwise also OOM. Falling back to CPU.', flush=True)
+                    gc.collect()
+                    cp.get_default_memory_pool().free_all_blocks()
+                    cp.get_default_pinned_memory_pool().free_all_blocks()
+                    cp._default_memory_pool.free_all_blocks()
+                    pairwise_on_gpu = False
+
+            if pairwise_on_gpu:
                 def iqr(x):
                     q1 = cp.percentile(x, 25)
                     q3 = cp.percentile(x, 75)
@@ -757,18 +794,6 @@ class stLENS():
 
                 rob_scores = cp.array([iqr(pert_scores[:, i]) for i in range(pert_scores.shape[1])])
                 robust_idx = rob_scores > self.threshold
-            except cp.cuda.memory.OutOfMemoryError:
-                print('[Warning] GPU OOM in pairwise correlation. Falling back to CPU.', flush=True)
-                cp.get_default_memory_pool().free_all_blocks()
-                cp.get_default_pinned_memory_pool().free_all_blocks()
-                cp._default_memory_pool.free_all_blocks()
-                self.pert_vecs = [cp.asnumpy(pv) if isinstance(pv, cp.ndarray) else pv
-                                  for pv in self.pert_vecs]
-                cp.get_default_memory_pool().free_all_blocks()
-                cp.get_default_pinned_memory_pool().free_all_blocks()
-                cp._default_memory_pool.free_all_blocks()
-                gc.collect()
-                pairwise_on_gpu = False
 
         if not pairwise_on_gpu:
             pert_scores_list = []
@@ -788,6 +813,14 @@ class stLENS():
 
             rob_scores = np.array([iqr(pert_scores[:, i]) for i in range(pert_scores.shape[1])])
             robust_idx = rob_scores > self.threshold
+
+        # Pairwise done; pert_vecs no longer needed
+        del self.pert_vecs
+        gc.collect()
+        if device == 'gpu':
+            cp.get_default_memory_pool().free_all_blocks()
+            cp.get_default_pinned_memory_pool().free_all_blocks()
+            cp._default_memory_pool.free_all_blocks()
 
         if isinstance(robust_idx, cp.ndarray):
             robust_idx_np = robust_idx.get()
